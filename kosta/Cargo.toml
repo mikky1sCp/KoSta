@@ -1,0 +1,20 @@
+[package]
+name = "kosta"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kosta-core = { path = "../kosta-core" }
+kosta-crypto = { path = "../kosta-crypto" }
+kosta-transport = { path = "../kosta-transport" }
+rand = "0.8"
+num-bigint = { version = "0.4", features = ["rand"] }
+num-integer = "0.1"
+num-traits = "0.2"
+sha1 = "0.10"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+lazy_static = "1.4"
+tracing = "0.1"
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
