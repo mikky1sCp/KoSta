@@ -1,0 +1,7 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+db_path = "kosta.db"
+use_tls = false
+cert_path = "cert.pem"
+key_path = "key.pem"

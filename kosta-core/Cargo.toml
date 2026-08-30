@@ -1,0 +1,8 @@
+[package]
+name = "kosta-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crc = "3.0"
+hex = "0.4"   # опционально, для отладки
