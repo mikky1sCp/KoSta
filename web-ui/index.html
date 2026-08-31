@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>KoSta · неоновый мессенджер</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        /* ---------- Глобальный фон ---------- */
+        * { box-sizing: border-box; }
+        body {
+            background: #0b0d15;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 12px;
+        }
+
+        /* Неоновый градиент на заднем плане (анимированный) */
+        .neon-bg {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            background: radial-gradient(circle at 20% 30%, #1a1a2e, #0b0d15 70%);
+            animation: neonPulse 8s ease-in-out infinite alternate;
+        }
+        @keyframes neonPulse {
+            0% { opacity: 0.8; }
+            100% { opacity: 1; background: radial-gradient(circle at 80% 70%, #1e1a2e, #0b0d15 70%); }
+        }
+
+        /* ---------- Левитирующий контейнер входа ---------- */
+        .auth-container {
+            width: 100%;
+            max-width: 440px;
+            margin: 20px auto;
+            animation: float 5s ease-in-out infinite;
+            perspective: 800px;
+        }
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+            100% { transform: translateY(0px); }
+        }
+
+        .auth-card {
+            background: linear-gradient(145deg, #12121a, #1e1e2e);
+            border-radius: 32px;
+            padding: 36px 28px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(120, 80, 255, 0.15);
+            backdrop-filter: blur(6px);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            transition: all 0.3s ease;
+        }
+        .auth-card:hover {
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.9), 0 0 45px rgba(120, 80, 255, 0.25);
+        }
+
+        .auth-title {
+            font-size: 30px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #c084fc, #60a5fa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .input-neon {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 14px 18px;
+            color: #e2e8f0;
+            font-size: 15px;
+            width: 100%;
+            transition: all 0.25s ease;
+            outline: none;
+        }
+        .input-neon:focus {
+            border-color: #8b5cf6;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.25);
+            background: rgba(255, 255, 255, 0.07);
+        }
+        .input-neon::placeholder {
+            color: #6b7280;
+            font-weight: 300;
+        }
+
+        .btn-auth {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            border: none;
+            border-radius: 16px;
+            padding: 14px 20px;
+            font-weight: 600;
+            font-size: 16px;
+            color: #fff;
+            width: 100%;
+            transition: all 0.25s ease;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(124, 58, 237, 0.3);
+        }
+        .btn-auth:hover {
+            transform: scale(1.02);
+            box-shadow: 0 8px 30px rgba(124, 58, 237, 0.5);
+        }
+        .btn-auth:active {
+            transform: scale(0.97);
+        }
+
+        .toggle-mode {
+            color: #94a3b8;
+            font-size: 14px;
+            cursor: pointer;
+            transition: color 0.2s;
+            text-align: center;
+            display: block;
+            margin-top: 18px;
+        }
+        .toggle-mode:hover {
+            color: #c084fc;
+        }
+        .auth-error {
+            color: #f87171;
+            font-size: 14px;
+            text-align: center;
+            margin-top: 12px;
+            min-height: 24px;
+        }
+
+        /* ---------- Основной интерфейс (чат) – теперь почти на весь экран ---------- */
+        #app {
+            display: none;
+            width: 100%;
+            max-width: 1600px;
+            height: 98vh;
+            max-height: none;
+            background: rgba(18, 18, 30, 0.75);
+            backdrop-filter: blur(14px);
+            border-radius: 28px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            overflow: hidden;
+            box-shadow: 0 30px 80px rgba(0, 0, 0, 0.8);
+            margin: 6px;
+        }
+
+        /* Мобильная адаптация – почти полный экран */
+        @media (max-width: 640px) {
+            body { padding: 4px; }
+            .auth-container { max-width: 100%; margin: 10px; }
+            .auth-card { padding: 24px 16px; border-radius: 24px; }
+            #app {
+                border-radius: 16px;
+                height: 98vh;
+                max-height: none;
+                margin: 2px;
+            }
+        }
+
+        /* Стили для чата */
+        .chat-item.active {
+            background: rgba(139, 92, 246, 0.15);
+            border-left: 3px solid #8b5cf6;
+        }
+        .message-in {
+            background: #1e293b;
+        }
+        .message-out {
+            background: #2563eb;
+        }
+        .scrollable::-webkit-scrollbar {
+            width: 5px;
+        }
+        .scrollable::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 8px;
+        }
+
+        /* Анимация появления сообщений */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn {
+            animation: fadeInUp 0.2s ease-out forwards;
+        }
+
+        /* Увеличим шрифты и отступы для комфорта */
+        #chat-title { font-size: 1.2rem; }
+        .message-text { font-size: 0.95rem; }
+        .message-time { font-size: 0.7rem; }
+        #message-input { font-size: 0.95rem; }
+    </style>
+</head>
+<body>
+
+    <!-- Неоновый фон -->
+    <div class="neon-bg"></div>
+
+    <!-- ===== КОНТЕЙНЕР ВХОДА ===== -->
+    <div id="login-container" class="auth-container">
+        <div class="auth-card">
+            <div class="text-center mb-6">
+                <i class="fas fa-comment-dots text-4xl text-indigo-400 mb-2"></i>
+                <h1 class="auth-title">KoSta</h1>
+                <p class="text-slate-400 text-sm" id="auth-subtitle">Войдите или создайте аккаунт</p>
+            </div>
+
+            <form id="login-form" class="space-y-4">
+                <div>
+                    <label class="block text-slate-300 text-sm font-medium mb-1">Телефон</label>
+                    <input type="text" id="login-phone" placeholder="+7 912 345 67 89" class="input-neon" required>
+                </div>
+                <div>
+                    <label class="block text-slate-300 text-sm font-medium mb-1">Пароль</label>
+                    <input type="password" id="login-password" placeholder="••••••••" class="input-neon" required>
+                </div>
+                <button type="submit" class="btn-auth" id="auth-action-btn">Войти</button>
+                <div class="auth-error" id="login-error"></div>
+            </form>
+
+            <div class="toggle-mode" id="toggle-auth-mode">
+                <span>Нет аккаунта? <strong class="text-indigo-400">Зарегистрироваться</strong></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== ОСНОВНОЙ ИНТЕРФЕЙС (после входа) ===== -->
+    <div id="app">
+        <!-- Хедер -->
+        <header class="bg-slate-800/70 p-4 flex items-center justify-between border-b border-white/5">
+            <div class="flex items-center space-x-3">
+                <i class="fas fa-comment-dots text-indigo-400 text-2xl"></i>
+                <h1 class="text-xl font-semibold text-white">KoSta</h1>
+            </div>
+            <div id="user-info" class="hidden flex items-center space-x-4">
+                <span id="user-phone" class="text-sm text-slate-300"></span>
+                <button id="logout-btn" class="text-sm text-slate-400 hover:text-red-400 transition">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Основная часть: сайдбар + чат -->
+        <div class="flex flex-1 overflow-hidden">
+            <!-- Список чатов -->
+            <aside class="w-80 bg-slate-800/40 border-r border-white/5 flex flex-col">
+                <div class="p-4 border-b border-white/5">
+                    <input type="text" placeholder="Поиск..." class="w-full bg-slate-700/50 text-white rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 border border-transparent focus:border-indigo-500 transition">
+                </div>
+                <div id="chat-list" class="flex-1 overflow-y-auto p-2 space-y-1 scrollable">
+                    <!-- Динамически загружается -->
+                </div>
+            </aside>
+
+            <!-- Область чата -->
+            <main class="flex-1 flex flex-col bg-slate-900/40">
+                <div id="chat-header" class="bg-slate-800/40 p-4 border-b border-white/5 flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center">
+                        <i class="fas fa-users text-white"></i>
+                    </div>
+                    <div>
+                        <h2 id="chat-title" class="font-semibold text-white">Общий чат</h2>
+                        <span id="chat-status" class="text-xs text-slate-400">онлайн</span>
+                    </div>
+                </div>
+
+                <div id="messages-container" class="flex-1 overflow-y-auto p-4 space-y-3 scrollable">
+                    <!-- Сообщения -->
+                </div>
+
+                <div class="p-4 bg-slate-800/40 border-t border-white/5">
+                    <div class="flex items-center space-x-2">
+                        <input id="message-input" type="text" placeholder="Сообщение..." class="flex-1 bg-slate-700/50 text-white rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 border border-transparent focus:border-indigo-500 transition">
+                        <button id="send-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-5 py-2.5 transition">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        // ===== State =====
+        let userId = null;
+        let ws = null;
+        let currentChatId = 1;
+        let isSubscribed = false;
+        let isLoginMode = true;
+
+        // ===== DOM =====
+        const loginContainer = document.getElementById('login-container');
+        const loginForm = document.getElementById('login-form');
+        const loginPhone = document.getElementById('login-phone');
+        const loginPassword = document.getElementById('login-password');
+        const loginError = document.getElementById('login-error');
+        const authActionBtn = document.getElementById('auth-action-btn');
+        const authSubtitle = document.getElementById('auth-subtitle');
+        const toggleMode = document.getElementById('toggle-auth-mode');
+
+        const app = document.getElementById('app');
+        const userInfo = document.getElementById('user-info');
+        const userPhone = document.getElementById('user-phone');
+        const logoutBtn = document.getElementById('logout-btn');
+        const chatList = document.getElementById('chat-list');
+        const messagesContainer = document.getElementById('messages-container');
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        const API_BASE = 'http://localhost:8081/api';
+        const WS_URL = 'ws://localhost:8081/ws';
+
+        // ===== Переключение режима =====
+        function setMode(mode) {
+            isLoginMode = mode;
+            if (mode) {
+                authActionBtn.textContent = 'Войти';
+                authSubtitle.textContent = 'Войдите в свой аккаунт';
+                toggleMode.innerHTML = `<span>Нет аккаунта? <strong class="text-indigo-400">Зарегистрироваться</strong></span>`;
+            } else {
+                authActionBtn.textContent = 'Зарегистрироваться';
+                authSubtitle.textContent = 'Создайте новый аккаунт';
+                toggleMode.innerHTML = `<span>Уже есть аккаунт? <strong class="text-indigo-400">Войти</strong></span>`;
+            }
+            loginError.textContent = '';
+        }
+
+        toggleMode.addEventListener('click', () => {
+            setMode(!isLoginMode);
+        });
+
+        // ===== Login / Register =====
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const phone = loginPhone.value.trim();
+            const password = loginPassword.value.trim();
+            if (!phone || !password) {
+                loginError.textContent = 'Заполните все поля';
+                return;
+            }
+            loginError.textContent = '';
+            try {
+                const res = await fetch(`${API_BASE}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone, password })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    userId = data.user_id;
+                    userPhone.textContent = phone;
+                    userInfo.classList.remove('hidden');
+                    loginContainer.style.display = 'none';
+                    app.style.display = 'flex';
+                    connectWebSocket();
+                    loadChats();
+                    loadHistory(currentChatId);
+                } else {
+                    loginError.textContent = data.error || 'Ошибка входа';
+                }
+            } catch (err) {
+                loginError.textContent = 'Ошибка соединения с сервером';
+            }
+        });
+
+        // ===== Logout =====
+        logoutBtn.addEventListener('click', () => {
+            if (ws) ws.close();
+            userId = null;
+            userInfo.classList.add('hidden');
+            app.style.display = 'none';
+            loginContainer.style.display = 'block';
+            messagesContainer.innerHTML = '';
+            chatList.innerHTML = '';
+            isSubscribed = false;
+            setMode(true);
+            loginPhone.value = '';
+            loginPassword.value = '';
+        });
+
+        // ===== WebSocket (с reconnect) =====
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT = 10;
+
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            ws = new WebSocket(WS_URL);
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                ws.send(JSON.stringify({
+                    action: 'auth',
+                    payload: { user_id: userId }
+                }));
+            };
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('WS:', data);
+                switch (data.type) {
+                    case 'auth_success':
+                        console.log('Auth success');
+                        subscribeToChat(currentChatId);
+                        break;
+                    case 'auth_failed':
+                        console.error('Auth failed:', data.payload.error);
+                        break;
+                    case 'subscribed':
+                        console.log('Subscribed to chat', data.payload.chat_id);
+                        isSubscribed = true;
+                        break;
+                    case 'new_message':
+                        const msg = data.payload;
+                        if (msg.sender_id !== userId) {
+                            appendMessage(msg, false);
+                        }
+                        break;
+                    case 'error':
+                        console.error('WS error:', data.payload.error);
+                        break;
+                    default:
+                        console.log('Unknown WS type:', data.type);
+                }
+            };
+            ws.onclose = () => {
+                console.log('WebSocket closed, reconnecting...');
+                if (reconnectAttempts < MAX_RECONNECT) {
+                    setTimeout(() => {
+                        reconnectAttempts++;
+                        connectWebSocket();
+                    }, 2000 * reconnectAttempts);
+                } else {
+                    alert('Не удалось восстановить соединение. Обновите страницу.');
+                }
+            };
+            ws.onerror = (err) => console.error('WebSocket error:', err);
+        }
+
+        function subscribeToChat(chatId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({
+                action: 'subscribe',
+                payload: { chat_id: chatId }
+            }));
+        }
+
+        // ===== Загрузка чатов =====
+        async function loadChats() {
+            try {
+                const res = await fetch(`${API_BASE}/chats`);
+                const chats = await res.json();
+                chatList.innerHTML = chats.map(chat => `
+                    <div class="chat-item p-3 rounded-xl cursor-pointer hover:bg-slate-700/50 transition ${chat.id === currentChatId ? 'active' : ''}" data-id="${chat.id}">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center">
+                                <i class="fas fa-user text-white"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="font-medium text-white truncate">${chat.title}</div>
+                                <div class="text-sm text-slate-400 truncate">${chat.last_message || 'Нет сообщений'}</div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+                document.querySelectorAll('.chat-item').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const id = parseInt(el.dataset.id);
+                        if (id === currentChatId) return;
+                        currentChatId = id;
+                        document.querySelectorAll('.chat-item').forEach(e => e.classList.remove('active'));
+                        el.classList.add('active');
+                        loadHistory(id);
+                        subscribeToChat(id);
+                    });
+                });
+            } catch (e) {
+                console.error('Load chats error:', e);
+            }
+        }
+
+        // ===== История =====
+        async function loadHistory(chatId) {
+            try {
+                const res = await fetch(`${API_BASE}/history?chat_id=${chatId}&limit=50`);
+                const messages = await res.json();
+                messagesContainer.innerHTML = '';
+                messages.forEach(msg => appendMessage(msg, msg.is_outgoing));
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            } catch (e) {
+                console.error('Load history error:', e);
+            }
+        }
+
+        // ===== Добавление сообщения =====
+        function appendMessage(msg, outgoing) {
+            const div = document.createElement('div');
+            div.className = `flex ${outgoing ? 'justify-end' : 'justify-start'} animate-fadeIn`;
+            div.innerHTML = `
+                <div class="max-w-xs px-4 py-2 rounded-2xl ${outgoing ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-white'} shadow-md">
+                    <div class="text-sm break-words">${escapeHtml(msg.text)}</div>
+                    <div class="text-xs text-slate-300 mt-1">${new Date(msg.timestamp * 1000).toLocaleTimeString()}</div>
+                </div>
+            `;
+            messagesContainer.appendChild(div);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ===== Отправка =====
+        function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({
+                action: 'send_message',
+                payload: {
+                    chat_id: currentChatId,
+                    text: text
+                }
+            }));
+            const tempMsg = {
+                text: text,
+                timestamp: Math.floor(Date.now() / 1000),
+                is_outgoing: true,
+                sender_id: userId,
+                id: Date.now()
+            };
+            appendMessage(tempMsg, true);
+            messageInput.value = '';
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Инициализация
+        setMode(true);
+        console.log('✨ KoSta неоновый интерфейс загружен');
+    </script>
+</body>
+</html>

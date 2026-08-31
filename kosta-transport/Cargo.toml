@@ -1,0 +1,9 @@
+[package]
+name = "kosta-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kosta-core = { path = "../kosta-core" }
+kosta-crypto = { path = "../kosta-crypto" }
+native-tls = { version = "0.2" }
