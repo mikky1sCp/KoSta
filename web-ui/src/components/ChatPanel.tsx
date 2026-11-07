@@ -1,4 +1,5 @@
 import { Loader2, MessageCircle } from 'lucide-react';
+import type { Api } from '../api';
 import type { ChatDetails, ChatItem, UiMessage, WsStatus } from '../types';
 import { ChatHeader } from './ChatHeader';
 import { Composer } from './Composer';
@@ -6,6 +7,7 @@ import { MessageList } from './MessageList';
 import { cn } from '../utils/classNames';
 
 interface ChatPanelProps {
+  api: Api;
   chat: ChatItem | null;
   details: ChatDetails | null;
   messages: UiMessage[];
@@ -17,8 +19,15 @@ interface ChatPanelProps {
   onBack: () => void;
   onOpenInfo: () => void;
   onSend: (text: string) => boolean;
+  onUpload: (
+    file: File,
+    caption: string,
+    onProgress: (percent: number) => void,
+  ) => Promise<boolean>;
   onLoadMore: () => Promise<boolean>;
   onTypingInput: (hasText: boolean) => void;
+  onOpenImage: (message: UiMessage, url: string) => void;
+  onDownload: (message: UiMessage) => Promise<void>;
   className?: string;
 }
 
@@ -38,6 +47,7 @@ function EmptyChat() {
 }
 
 export function ChatPanel({
+  api,
   chat,
   details,
   messages,
@@ -49,8 +59,11 @@ export function ChatPanel({
   onBack,
   onOpenInfo,
   onSend,
+  onUpload,
   onLoadMore,
   onTypingInput,
+  onOpenImage,
+  onDownload,
   className,
 }: ChatPanelProps) {
   return (
@@ -88,7 +101,10 @@ export function ChatPanel({
             typingLabel={typingLabel}
             isGroup={chat.is_group}
             participants={details?.participants ?? []}
+            api={api}
             onLoadMore={onLoadMore}
+            onOpenImage={onOpenImage}
+            onDownload={onDownload}
           />
 
           <Composer
@@ -96,6 +112,7 @@ export function ChatPanel({
             chatId={chat.id}
             connected={wsStatus === 'connected'}
             onSend={onSend}
+            onUpload={onUpload}
             onTypingInput={onTypingInput}
           />
         </>

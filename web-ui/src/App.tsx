@@ -11,12 +11,14 @@ import type {
 } from './types';
 import { getErrorMessage } from './utils/errors';
 import { buildTypingLabel } from './utils/format';
+import { downloadMedia, messagePreview } from './utils/media';
 import { useTheme } from './hooks/useTheme';
 import { useToasts } from './hooks/useToasts';
 import { AuthScreen } from './components/AuthScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { ToastViewport } from './components/ui/ToastViewport';
+import { Lightbox } from './components/ui/Lightbox';
 import { NewChatModal } from './components/modals/NewChatModal';
 import { NewGroupModal } from './components/modals/NewGroupModal';
 import { ChatInfoModal } from './components/modals/ChatInfoModal';
@@ -35,6 +37,12 @@ interface Session {
 }
 
 type ModalKind = 'new-chat' | 'new-group' | 'info' | 'profile';
+
+/** Лайтбокс показывает уже скачанный blob-url сообщения из ленты. */
+interface LightboxState {
+  message: UiMessage;
+  url: string;
+}
 
 function sortChats(chats: ChatItem[]): ChatItem[] {
   return [...chats].sort(
@@ -110,7 +118,7 @@ function applyIncomingMessage(
   const next = [...chats];
   next[index] = {
     ...current,
-    last_message: message.text,
+    last_message: messagePreview(message),
     last_timestamp: message.timestamp,
     unread_count: isActive
       ? 0
@@ -170,6 +178,7 @@ export function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   const [modal, setModal] = useState<ModalKind | null>(null);
+  const [lightbox, setLightbox] = useState<LightboxState | null>(null);
 
   const sessionRef = useRef<Session | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
@@ -349,6 +358,7 @@ export function App() {
     setChatsLoading(false);
     setTypingUsers([]);
     setModal(null);
+    setLightbox(null);
     loadingMoreRef.current = false;
     clearTyping();
     stopTyping();
@@ -437,7 +447,7 @@ export function App() {
         is_outgoing: true,
         read: false,
         delivered: false,
-        media_path: null,
+        media_name: null,
         media_type: null,
         media_size: null,
         is_media: false,
@@ -455,6 +465,74 @@ export function App() {
     },
     [stopTyping, toast],
   );
+
+  /**
+   * Вложение: сервер создаёт сообщение сам (POST /api/chats/{id}/media).
+   * Добавляем его в ленту без оптимистичной заглушки; WS-эхо с тем же id
+   * потом отфильтруется при дедупликации в appendIncomingMessage.
+   */
+  const handleUpload = useCallback(
+    async (
+      file: File,
+      caption: string,
+      onProgress: (percent: number) => void,
+    ): Promise<boolean> => {
+      const chatId = activeChatIdRef.current;
+      if (chatId === null) {
+        return false;
+      }
+      try {
+        const created = await api.uploadMedia(chatId, file, caption, onProgress);
+        const myUserId = meRef.current?.user_id ?? null;
+        const uiMessage: UiMessage = {
+          ...created,
+          // Сервер шлёт `is_outgoing: false` в broadcast — ориентируемся на sender_id.
+          is_outgoing:
+            myUserId !== null ? created.sender_id === myUserId : created.is_outgoing,
+          pending: false,
+        };
+        const isActive = chatId === activeChatIdRef.current;
+        if (isActive) {
+          setMessages((current) => appendIncomingMessage(current, uiMessage));
+        }
+        if (!chatsRef.current.some((chat) => chat.id === chatId)) {
+          void refreshChats({ silent: true });
+        } else {
+          setChats((current) =>
+            applyIncomingMessage(current, chatId, uiMessage, isActive),
+          );
+        }
+        return true;
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 401)) {
+          toast.error(getErrorMessage(error));
+        }
+        return false;
+      }
+    },
+    [api, refreshChats, toast],
+  );
+
+  const handleMediaDownload = useCallback(
+    async (message: UiMessage): Promise<void> => {
+      try {
+        await downloadMedia(api, message);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 401)) {
+          toast.error(getErrorMessage(error));
+        }
+      }
+    },
+    [api, toast],
+  );
+
+  const handleOpenImage = useCallback((message: UiMessage, url: string) => {
+    setLightbox({ message, url });
+  }, []);
+
+  const closeLightbox = useCallback(() => {
+    setLightbox(null);
+  }, []);
 
   const handleLoadMore = useCallback(async (): Promise<boolean> => {
     const chatId = activeChatIdRef.current;
@@ -647,6 +725,11 @@ export function App() {
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
+
+  useEffect(() => {
+    // Лайтбокс привязан к blob-url сообщения из ленты: при смене чата закрываем.
+    setLightbox(null);
   }, [activeChatId]);
 
   useEffect(() => {
@@ -883,6 +966,7 @@ export function App() {
         />
 
         <ChatPanel
+          api={api}
           chat={activeChat}
           details={details}
           messages={messages}
@@ -898,13 +982,26 @@ export function App() {
             }
           }}
           onSend={handleSend}
+          onUpload={handleUpload}
           onLoadMore={handleLoadMore}
           onTypingInput={handleTypingInput}
+          onOpenImage={handleOpenImage}
+          onDownload={handleMediaDownload}
           className={activeChatId !== null ? 'flex' : 'hidden md:flex'}
         />
       </div>
 
       <ToastViewport toasts={toasts} onDismiss={remove} />
+
+      {lightbox && (
+        <Lightbox
+          src={lightbox.url}
+          title={lightbox.message.media_name?.trim() || 'Изображение'}
+          caption={lightbox.message.text.trim() || undefined}
+          onClose={closeLightbox}
+          onDownload={() => handleMediaDownload(lightbox.message)}
+        />
+      )}
 
       {modal === 'new-chat' && (
         <NewChatModal

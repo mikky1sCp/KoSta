@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronUp, MessageSquare } from 'lucide-react';
+import type { Api } from '../api';
 import type { Participant, UiMessage } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { Spinner } from './ui/Spinner';
@@ -18,7 +19,10 @@ interface MessageListProps {
   typingLabel: string | null;
   isGroup: boolean;
   participants: Participant[];
+  api: Api;
   onLoadMore: () => Promise<boolean>;
+  onOpenImage: (message: UiMessage, url: string) => void;
+  onDownload: (message: UiMessage) => Promise<void>;
 }
 
 function MessagesSkeleton() {
@@ -50,7 +54,10 @@ export function MessageList({
   typingLabel,
   isGroup,
   participants,
+  api,
   onLoadMore,
+  onOpenImage,
+  onDownload,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -172,6 +179,9 @@ export function MessageList({
         showSender={!groupedWithPrevious}
         senderPhone={senderPhone}
         tail={!groupedWithNext}
+        api={api}
+        onOpenImage={onOpenImage}
+        onDownload={onDownload}
       />,
     );
 

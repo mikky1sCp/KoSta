@@ -5,6 +5,7 @@ use tokio::signal;
 
 mod db;
 mod dh_params;
+mod media;
 mod rate_limiter;
 mod secrets;
 mod server;
@@ -22,6 +23,19 @@ async fn main() -> Result<()> {
     let config = Config::builder()
         .add_source(config::File::with_name("config"))
         .build()?;
+
+    // Медиа-хранилище инициализируем до web-сервера: хендлеры читают
+    // глобальный экземпляр, а PayloadConfig берёт из него лимит.
+    // KOSTA_MEDIA_DIR переопределяет каталог из конфига (удобно для тестов).
+    let media_dir = std::env::var("KOSTA_MEDIA_DIR")
+        .ok()
+        .or_else(|| config.get_string("media.dir").ok())
+        .unwrap_or_else(|| "media".to_string());
+    let max_upload_mb = config
+        .get_int("media.max_upload_mb")
+        .unwrap_or(25)
+        .max(1) as u64;
+    media::init(&media_dir, max_upload_mb)?;
 
     let server_config = server::ServerConfig {
         host: config.get_string("server.host")?,

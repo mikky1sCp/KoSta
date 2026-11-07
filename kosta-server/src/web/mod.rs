@@ -12,6 +12,7 @@ use actix_web::{
 use actix_files::Files;
 use std::sync::Arc;
 use crate::db::Database;
+use crate::media;
 use crate::web::state::WebState;
 use crate::metrics; // <-- импорт метрик
 
@@ -22,6 +23,9 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
     // Статику выносим в env: развёртыванию не нужно пересобирать бинарь
     // ради другого каталога с web-ui.
     let ui_dir = std::env::var("KOSTA_WEB_UI_DIR").unwrap_or_else(|_| "./web-ui/dist".to_string());
+    // Bytes-экстрактор должен принять файл размером с media-лимит. Даём 1 МиБ
+    // запаса, чтобы наш JSON-413 сработал раньше стандартной ошибки экстрактора.
+    let max_payload_bytes = media::max_bytes().saturating_add(1024 * 1024) as usize;
 
     actix_rt::System::new().block_on(async move {
         HttpServer::new(move || {
@@ -38,6 +42,8 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                 .app_data(state.clone())
                 // Тело логина маленькое; 16 КиБ отсекает мегабайтные JSON.
                 .app_data(web::JsonConfig::default().limit(16 * 1024))
+                // Сырое тело загрузки медиа ограничено media-лимитом.
+                .app_data(web::PayloadConfig::new(max_payload_bytes))
                 .service(
                     web::scope("/api")
                         .route("/login", web::post().to(handlers::login))
@@ -72,7 +78,15 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                             web::resource("/chats/{id}/read")
                                 .route(web::post().to(handlers::mark_chat_read)),
                         )
+                        // Загрузка файла в диалог: два сегмента после /chats,
+                        // поэтому с "/chats/{id}" не конфликтует.
+                        .service(
+                            web::resource("/chats/{id}/media")
+                                .route(web::post().to(handlers::upload_media)),
+                        )
                         .route("/history", web::get().to(handlers::get_history))
+                        // Скачивание по id сообщения: путь хранения наружу не отдаётся.
+                        .route("/media/{message_id}", web::get().to(handlers::download_media))
                         .route("/users/lookup", web::get().to(handlers::lookup_user))
                 )
                 // --- Health & Metrics ---

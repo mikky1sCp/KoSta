@@ -233,6 +233,7 @@ const login3 = await req('/api/login', {
   method: 'POST',
   body: { phone: thirdPhone, password, register: true },
 });
+const token3 = login3.body?.token;
 const userId3 = login3.body?.user_id;
 check('ui-api: третий пользователь создан', login3.status === 200 && Boolean(userId3));
 
@@ -317,6 +318,88 @@ check(
   'ws: typing доставлен собеседнику',
   typingEvent?.payload?.user_id === userId2 && typingEvent?.payload?.typing === true,
   JSON.stringify(typingEvent?.payload),
+);
+
+// Медиа: загрузка, broadcast, скачивание, проверка прав и MIME.
+const pngBytes = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+);
+const uploadUrl =
+  `${BASE}/api/chats/${privateId}/media?name=${encodeURIComponent('pixel.png')}` +
+  `&caption=${encodeURIComponent('media caption')}`;
+const uploadRes = await fetch(uploadUrl, {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'image/png' },
+  body: pngBytes,
+});
+const uploadBody = await uploadRes.json().catch(() => null);
+check(
+  'media: загрузка создаёт media-сообщение',
+  uploadRes.status === 200 &&
+    uploadBody?.is_media === true &&
+    uploadBody?.media_type === 'image/png' &&
+    uploadBody?.media_size === pngBytes.length &&
+    uploadBody?.media_name === 'pixel.png',
+  JSON.stringify(uploadBody),
+);
+
+const mediaBroadcast = await wsA
+  .next((m) => m.type === 'new_message' && m.payload?.id === uploadBody?.id, 3000)
+  .catch(() => null);
+check(
+  'media: new_message broadcast подписчику',
+  mediaBroadcast?.payload?.is_media === true && mediaBroadcast?.payload?.sender_id === userId2,
+  JSON.stringify(mediaBroadcast?.payload),
+);
+
+const downloadRes = await fetch(`${BASE}/api/media/${uploadBody?.id}`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+const downloadBytes = Buffer.from(await downloadRes.arrayBuffer());
+check(
+  'media: авторизованное скачивание',
+  downloadRes.status === 200 &&
+    (downloadRes.headers.get('content-type') ?? '').startsWith('image/png') &&
+    downloadBytes.equals(pngBytes),
+  `status ${downloadRes.status}, bytes ${downloadBytes.length}`,
+);
+
+const foreignMedia = await fetch(`${BASE}/api/media/${uploadBody?.id}`, {
+  headers: { Authorization: `Bearer ${token3}` },
+});
+check('media: чужой участник не скачает файл -> 403', foreignMedia.status === 403, `status ${foreignMedia.status}`);
+
+const badMime = await fetch(
+  `${BASE}/api/chats/${privateId}/media?name=${encodeURIComponent('x.html')}`,
+  {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'text/html' },
+    body: Buffer.from('<b>x</b>'),
+  },
+);
+check('media: запрещённый MIME -> 415', badMime.status === 415, `status ${badMime.status}`);
+
+const emptyUpload = await fetch(
+  `${BASE}/api/chats/${privateId}/media?name=${encodeURIComponent('empty.png')}`,
+  {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'image/png' },
+    body: Buffer.alloc(0),
+  },
+);
+check('media: пустой файл -> 400', emptyUpload.status === 400, `status ${emptyUpload.status}`);
+
+const mediaHistory = await req(`/api/history?chat_id=${privateId}&limit=10`, { token });
+const mediaInHistory = Array.isArray(mediaHistory.body)
+  ? mediaHistory.body.find((m) => m.id === uploadBody?.id)
+  : null;
+check(
+  'media: сообщение в истории с media-полями',
+  mediaInHistory?.is_media === true &&
+    mediaInHistory?.media_name === 'pixel.png' &&
+    mediaInHistory?.text === 'media caption',
+  JSON.stringify(mediaInHistory),
 );
 
 const group = await req('/api/chats/group', {

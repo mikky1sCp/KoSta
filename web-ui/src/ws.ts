@@ -1,4 +1,5 @@
 import type { Message, WsStatus } from './types';
+import { parseMessagePayload } from './utils/message';
 
 type Payload = Record<string, unknown>;
 
@@ -39,35 +40,22 @@ function asString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
-function asNullableString(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
-}
-
 function asNullableNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Медиа-сообщения приходят с теми же полями, что и в истории
+ * (`media_name`, `media_type`, `media_size`, `is_media`), плюс `dialog_id`.
+ */
 function parseMessage(payload: Payload): (Message & { dialog_id?: number }) | null {
-  if (
-    typeof payload.id !== 'number' ||
-    typeof payload.sender_id !== 'number' ||
-    typeof payload.text !== 'string'
-  ) {
+  const message = parseMessagePayload(payload);
+  if (!message) {
     return null;
   }
   const dialogId = asNullableNumber(payload.dialog_id);
   return {
-    id: payload.id,
-    sender_id: payload.sender_id,
-    text: payload.text,
-    timestamp: asNumber(payload.timestamp),
-    is_outgoing: payload.is_outgoing === true,
-    read: payload.read === true,
-    delivered: payload.delivered === true,
-    media_path: asNullableString(payload.media_path),
-    media_type: asNullableString(payload.media_type),
-    media_size: asNullableNumber(payload.media_size),
-    is_media: payload.is_media === true,
+    ...message,
     ...(dialogId !== null ? { dialog_id: dialogId } : {}),
   };
 }

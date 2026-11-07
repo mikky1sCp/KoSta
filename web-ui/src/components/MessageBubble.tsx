@@ -1,7 +1,11 @@
 import { Check, CheckCheck, Clock3 } from 'lucide-react';
+import type { Api } from '../api';
 import type { UiMessage } from '../types';
 import { formatTime } from '../utils/format';
+import { isImageMimeType } from '../utils/media';
 import { cn } from '../utils/classNames';
+import { FileAttachment } from './media/FileAttachment';
+import { MediaImage } from './media/MediaImage';
 
 interface OutgoingStatusProps {
   message: UiMessage;
@@ -27,6 +31,9 @@ interface MessageBubbleProps {
   senderPhone: string | null;
   tail: boolean;
   inGroup: boolean;
+  api: Api;
+  onOpenImage: (message: UiMessage, url: string) => void;
+  onDownload: (message: UiMessage) => Promise<void>;
 }
 
 export function MessageBubble({
@@ -36,7 +43,15 @@ export function MessageBubble({
   senderPhone,
   tail,
   inGroup,
+  api,
+  onOpenImage,
+  onDownload,
 }: MessageBubbleProps) {
+  const hasMedia = message.is_media === true;
+  const hasImage = hasMedia && isImageMimeType(message.media_type);
+  const caption = message.text.trim();
+  const showCaption = caption.length > 0;
+
   return (
     <div
       className={cn(
@@ -53,18 +68,44 @@ export function MessageBubble({
 
         <div
           className={cn(
-            'rounded-2xl px-3.5 py-2 shadow-sm',
+            'rounded-2xl shadow-sm',
+            hasMedia ? 'p-1.5' : 'px-3.5 py-2',
             isOwn ? 'bubble-out' : 'bubble-in',
             tail && (isOwn ? 'rounded-br-md' : 'rounded-bl-md'),
             message.pending && 'opacity-80',
           )}
         >
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-            {message.text}
-          </p>
+          {hasMedia &&
+            (hasImage ? (
+              <MediaImage
+                api={api}
+                message={message}
+                isOwn={isOwn}
+                onOpen={onOpenImage}
+              />
+            ) : (
+              <FileAttachment
+                message={message}
+                isOwn={isOwn}
+                onDownload={onDownload}
+              />
+            ))}
+
+          {showCaption && (
+            <p
+              className={cn(
+                'whitespace-pre-wrap break-words text-sm leading-relaxed',
+                hasMedia && 'px-2 pt-1.5',
+              )}
+            >
+              {message.text}
+            </p>
+          )}
+
           <div
             className={cn(
               'mt-1 flex items-center justify-end gap-1 text-[10px] leading-none',
+              hasMedia && 'px-1 pb-0.5',
               isOwn ? 'text-white/75' : 'text-muted',
             )}
           >

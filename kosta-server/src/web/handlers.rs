@@ -1,12 +1,13 @@
 // kosta-server/src/web/handlers.rs
-use actix_web::{web, HttpRequest, HttpResponse, Result};
+use actix_web::{http::header, web, HttpRequest, HttpResponse, Result};
 use serde_json::json;
 use std::sync::Arc;
 
 use anyhow::Result as AnyhowResult;
 
 use crate::db::{ChatRow, Database, ParticipantRow};
-use crate::rate_limiter::{check_limit, HTTP_LIMITER, LOGIN_LIMITER};
+use crate::media;
+use crate::rate_limiter::{check_limit, HTTP_LIMITER, LOGIN_LIMITER, MEDIA_LIMITER};
 use crate::web::auth;
 use crate::web::models::*;
 use crate::web::state::WebState;
@@ -17,6 +18,8 @@ const MAX_GROUP_PARTICIPANTS: usize = 200;
 const MAX_GROUP_INVITEES: usize = MAX_GROUP_PARTICIPANTS - 1;
 /// Максимальная длина названия группы в символах (не байтах).
 const MAX_GROUP_TITLE_CHARS: usize = 128;
+/// Максимальная длина подписи к медиа — та же, что у текста сообщения.
+const MAX_MEDIA_CAPTION_CHARS: usize = 4096;
 
 fn client_ip(req: &HttpRequest) -> String {
     req.connection_info()
@@ -45,6 +48,56 @@ fn not_found(message: &str) -> HttpResponse {
 
 fn forbidden(message: &str) -> HttpResponse {
     HttpResponse::Forbidden().json(json!({ "error": message }))
+}
+
+fn payload_too_large(message: &str) -> HttpResponse {
+    HttpResponse::PayloadTooLarge().json(json!({ "error": message }))
+}
+
+fn unsupported_media_type(message: &str) -> HttpResponse {
+    HttpResponse::UnsupportedMediaType().json(json!({ "error": message }))
+}
+
+/// Текущее время в unix-секундах (для timestamp сообщения).
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// MIME из заголовка `Content-Type`, без параметров (`; charset=...`) и в
+/// нижнем регистре. Отсутствующий/битый заголовок — `None` (на уровне API 415).
+fn request_mime(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .filter(|mime| !mime.is_empty())
+}
+
+/// Percent-encoding для `filename*` в Content-Disposition (RFC 5987).
+///
+/// Оставляем только unreserved-символы: юникод и пробелы уходят в `%XX`,
+/// поэтому заголовок остаётся ASCII и не ломает ответ.
+fn percent_encode_filename(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            _ => encoded.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    encoded
 }
 
 /// Числовой id из пути. Разбираем вручную, чтобы ошибка была в общем
@@ -307,25 +360,24 @@ pub async fn get_history(
         Ok(rows) => {
             let messages: Vec<MessageItem> = rows
                 .into_iter()
-                .map(
-                    |(id, sender_id, text, ts, _out, read, delivered, media_path, media_type, media_size, is_media)| {
-                        MessageItem {
-                            id,
-                            sender_id,
-                            text,
-                            timestamp: ts,
-                            // Одна колонка is_outgoing хранит «как видел отправитель»;
-                            // для зрителя исходящее = отправлено им самим.
-                            is_outgoing: sender_id == user_id,
-                            read,
-                            delivered,
-                            media_path,
-                            media_type,
-                            media_size,
-                            is_media,
-                        }
-                    },
-                )
+                .map(|row| {
+                    let is_media = row.is_media();
+                    MessageItem {
+                        id: row.id,
+                        sender_id: row.sender_id,
+                        text: row.text,
+                        timestamp: row.timestamp,
+                        // Одна колонка is_outgoing хранит «как видел отправитель»;
+                        // для зрителя исходящее = отправлено им самим.
+                        is_outgoing: row.sender_id == user_id,
+                        read: row.read,
+                        delivered: row.delivered,
+                        media_name: row.media_name,
+                        media_type: row.media_type,
+                        media_size: row.media_size,
+                        is_media,
+                    }
+                })
                 .collect();
             Ok(HttpResponse::Ok().json(messages))
         }
@@ -715,8 +767,210 @@ pub async fn remove_participant(
         Ok(deleted) => deleted,
         Err(e) => return Ok(server_error("failed to delete empty dialog", e)),
     };
+    // Медиа-файлы удалённого диалога тоже не должны оставаться на диске.
+    // Ошибку только логируем: диалог уже удалён, ответ клиенту важнее.
+    if deleted {
+        if let Err(e) = media::delete_dialog(dialog_id) {
+            tracing::warn!("failed to delete media of empty dialog {}: {:#}", dialog_id, e);
+        }
+    }
 
     Ok(HttpResponse::Ok().json(json!({ "deleted": deleted })))
+}
+
+/// Загрузка файла и создание медиа-сообщения:
+/// `POST /api/chats/{id}/media?name=<имя>&caption=<подпись>`.
+///
+/// Тело запроса — сырые байты файла; MIME берётся из `Content-Type`.
+/// Файл сохраняется до вставки в БД, при ошибке вставки удаляется.
+pub async fn upload_media(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+    query: web::Query<UploadMediaQuery>,
+    body: web::Bytes,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    // Отдельный лимит по пользователю: загрузка пишет на диск и в историю.
+    if let Err(e) = check_limit(&MEDIA_LIMITER, user_id) {
+        return Ok(rate_limited(e));
+    }
+
+    let dialog_id = match path_id(&path, "id диалога") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let participants = match dialog_participants(&db, dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+
+    let Some(raw_name) = query.name.as_deref() else {
+        return Ok(bad_request("Параметр name обязателен"));
+    };
+    let name = match media::sanitize_filename(raw_name) {
+        Ok(name) => name,
+        Err(_) => return Ok(bad_request("Некорректное имя файла")),
+    };
+    let caption = query.caption.as_deref().unwrap_or("");
+    if caption.chars().count() > MAX_MEDIA_CAPTION_CHARS {
+        return Ok(bad_request("Подпись слишком длинная: максимум 4096 символов"));
+    }
+
+    let Some(mime) = request_mime(&req) else {
+        return Ok(unsupported_media_type("Неподдерживаемый тип файла"));
+    };
+    if !media::is_supported_mime(&mime) {
+        return Ok(unsupported_media_type("Неподдерживаемый тип файла"));
+    }
+
+    if body.is_empty() {
+        return Ok(bad_request("Пустой файл"));
+    }
+    let max_bytes = media::max_bytes();
+    if body.len() as u64 > max_bytes {
+        return Ok(payload_too_large("Файл слишком большой"));
+    }
+
+    let storage = match media::storage() {
+        Ok(storage) => storage,
+        Err(e) => return Ok(server_error("media storage is not initialized", e)),
+    };
+    let saved = match storage.save(dialog_id, &body, &name, &mime) {
+        Ok(saved) => saved,
+        Err(e) => return Ok(server_error("failed to store media file", e)),
+    };
+
+    let timestamp = now_secs();
+    let size = body.len() as i64;
+    let message_id = match db.save_media_message(
+        dialog_id,
+        user_id,
+        caption,
+        timestamp,
+        &saved.key,
+        &mime,
+        size,
+        &saved.name,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            // Сообщения в истории нет — файл на диске стал бы сиротой.
+            if let Err(cleanup) = storage.delete(&saved.key) {
+                tracing::warn!("failed to clean up media file after db error: {:#}", cleanup);
+            }
+            return Ok(server_error("failed to save media message", e));
+        }
+    };
+
+    // Событие для WS-подписчиков диалога: is_outgoing всегда false, клиент
+    // сравнивает sender_id со своим user_id (как в ws.rs).
+    let event = json!({
+        "type": "new_message",
+        "payload": {
+            "id": message_id,
+            "dialog_id": dialog_id,
+            "sender_id": user_id,
+            "text": caption,
+            "timestamp": timestamp,
+            "is_outgoing": false,
+            "read": false,
+            "delivered": false,
+            "media_name": &saved.name,
+            "media_type": &mime,
+            "media_size": size,
+            "is_media": true,
+        }
+    })
+    .to_string();
+    state.broadcast_to_dialog(dialog_id, &event, None);
+
+    Ok(HttpResponse::Ok().json(MessageItem {
+        id: message_id,
+        sender_id: user_id,
+        text: caption.to_string(),
+        timestamp,
+        is_outgoing: true,
+        read: false,
+        delivered: false,
+        media_name: Some(saved.name),
+        media_type: Some(mime),
+        media_size: Some(size),
+        is_media: true,
+    }))
+}
+
+/// Скачивание файла медиа-сообщения: `GET /api/media/{message_id}`.
+///
+/// Доступно только участникам диалога, где лежит сообщение. Путь хранения
+/// не фигурирует ни в ответе, ни в ошибках.
+pub async fn download_media(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    path: web::Path<String>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let message_id = match path_id(&path, "id сообщения") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let media_row = match db.get_media_message(message_id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return Ok(not_found("media not found")),
+        Err(e) => return Ok(server_error("failed to load media message", e)),
+    };
+
+    let participants = match dialog_participants(&db, media_row.dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+
+    let storage = match media::storage() {
+        Ok(storage) => storage,
+        Err(e) => return Ok(server_error("media storage is not initialized", e)),
+    };
+    let bytes = match storage.read(&media_row.media_key) {
+        Ok(bytes) => bytes,
+        Err(e) => return Ok(server_error("failed to read media file", e)),
+    };
+
+    // Изображения показываем в браузере, остальное — только скачиванием.
+    let disposition = if media_row.mime.starts_with("image/") {
+        "inline".to_string()
+    } else {
+        let name = media_row.name.as_deref().unwrap_or("file");
+        format!("attachment; filename*=UTF-8''{}", percent_encode_filename(name))
+    };
+
+    Ok(HttpResponse::Ok()
+        .content_type(media_row.mime.as_str())
+        .insert_header(("Content-Disposition", disposition.as_str()))
+        .insert_header(("Cache-Control", "private"))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .body(bytes))
 }
 
 /// Помечает входящие сообщения диалога прочитанными и сообщает об этом
@@ -763,4 +1017,19 @@ pub async fn mark_chat_read(
     state.broadcast_to_dialog(dialog_id, &event, None);
 
     Ok(HttpResponse::Ok().json(json!({ "marked": marked })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_encoding_keeps_ascii_and_encodes_unicode() {
+        assert_eq!(percent_encode_filename("photo-1_final.png"), "photo-1_final.png");
+        assert_eq!(
+            percent_encode_filename("фото 1.png"),
+            "%D1%84%D0%BE%D1%82%D0%BE%201.png"
+        );
+        assert_eq!(percent_encode_filename("a+b;c.pdf"), "a%2Bb%3Bc.pdf");
+    }
 }

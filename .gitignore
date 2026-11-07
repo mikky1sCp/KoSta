@@ -11,3 +11,6 @@ node_modules/
 .npm-cache/
 web-ui/dist/
 web-ui/.vite/
+
+# Загруженные пользователями файлы
+/media/

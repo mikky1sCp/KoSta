@@ -59,6 +59,11 @@ pub struct ChatDetails {
     pub is_admin: bool,
 }
 
+/// Элемент истории и ответа на загрузку медиа.
+///
+/// Ключ хранения (`media_path` в БД) наружу не отдаётся: скачивание — только
+/// по id сообщения через `GET /api/media/{message_id}`. Поэтому в API есть
+/// `media_name` (безопасное исходное имя), но нет пути на сервере.
 #[derive(Debug, Serialize)]
 pub struct MessageItem {
     pub id: i64,
@@ -68,7 +73,7 @@ pub struct MessageItem {
     pub is_outgoing: bool,
     pub read: bool,
     pub delivered: bool,
-    pub media_path: Option<String>,
+    pub media_name: Option<String>,
     pub media_type: Option<String>,
     pub media_size: Option<i64>,
     pub is_media: bool,
@@ -135,6 +140,17 @@ pub struct AddParticipantRequest {
 #[derive(Debug, Deserialize)]
 pub struct LookupQuery {
     pub phone: Option<String>,
+}
+
+/// Query `POST /api/chats/{id}/media?name=...&caption=...`.
+///
+/// `name` обязателен (проверяет хендлер), `caption` — необязательная подпись.
+/// Оба `Option`, чтобы отсутствие параметра давало наш JSON-400, а не
+/// текстовую ошибку экстрактора actix.
+#[derive(Debug, Deserialize)]
+pub struct UploadMediaQuery {
+    pub name: Option<String>,
+    pub caption: Option<String>,
 }
 
 #[cfg(test)]
@@ -261,5 +277,67 @@ mod tests {
         .unwrap();
         assert_eq!(lookup["user_id"], 8);
         assert_eq!(lookup["phone"], "+79990000001");
+    }
+
+    #[test]
+    fn media_message_item_matches_contract_and_hides_storage_path() {
+        let item = MessageItem {
+            id: 105,
+            sender_id: 8,
+            text: String::new(),
+            timestamp: 1_794_057_537,
+            is_outgoing: false,
+            read: false,
+            delivered: false,
+            media_name: Some("фото.png".to_string()),
+            media_type: Some("image/png".to_string()),
+            media_size: Some(1024),
+            is_media: true,
+        };
+        let value = serde_json::to_value(item).unwrap();
+        assert_eq!(value["media_name"], "фото.png");
+        assert_eq!(value["media_type"], "image/png");
+        assert_eq!(value["media_size"], 1024);
+        assert_eq!(value["is_media"], true);
+        assert_eq!(value["text"], "");
+        assert!(
+            value.get("media_path").is_none(),
+            "путь хранения не должен утекать в API"
+        );
+    }
+
+    #[test]
+    fn plain_message_item_keeps_null_media_fields() {
+        let item = MessageItem {
+            id: 1,
+            sender_id: 7,
+            text: "hello".to_string(),
+            timestamp: 10,
+            is_outgoing: true,
+            read: true,
+            delivered: false,
+            media_name: None,
+            media_type: None,
+            media_size: None,
+            is_media: false,
+        };
+        let value = serde_json::to_value(item).unwrap();
+        assert!(value["media_name"].is_null());
+        assert!(value["media_type"].is_null());
+        assert!(value["media_size"].is_null());
+        assert_eq!(value["is_media"], false);
+        assert_eq!(value["text"], "hello");
+    }
+
+    #[test]
+    fn upload_media_query_parses_name_and_caption() {
+        let query: UploadMediaQuery =
+            serde_json::from_str(r#"{"name":"фото.png","caption":"подпись"}"#).unwrap();
+        assert_eq!(query.name.as_deref(), Some("фото.png"));
+        assert_eq!(query.caption.as_deref(), Some("подпись"));
+
+        let empty: UploadMediaQuery = serde_json::from_str("{}").unwrap();
+        assert!(empty.name.is_none());
+        assert!(empty.caption.is_none());
     }
 }

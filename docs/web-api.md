@@ -78,7 +78,7 @@ An array of messages, newest first (`limit` is clamped to 1..=200, `offset >= 0`
   "is_outgoing": false,
   "read": true,
   "delivered": false,
-  "media_path": null,
+  "media_name": null,
   "media_type": null,
   "media_size": null,
   "is_media": false
@@ -87,6 +87,10 @@ An array of messages, newest first (`limit` is clamped to 1..=200, `offset >= 0`
 
 `is_outgoing` is computed for the current user (`sender_id == viewer`).
 A foreign or missing dialog returns `403`/`404` respectively.
+
+For a media message `text` may be empty, `is_media` is `true`, `media_type` is the
+stored MIME type, `media_size` is the file size in bytes and `media_name` is the
+original file name (sanitized). The server-side storage path is never exposed.
 
 ### GET /api/chats/{id}
 
@@ -161,6 +165,45 @@ It also broadcasts a `messages_read` event to the dialog subscribers (see below)
 Exact user lookup by phone number (for "new chat" / "add participant").
 Available to authenticated users, rate-limited. Returns
 `200 {"user_id": 8, "phone": "+7999..."}` or `404 {"error":"user not found"}`.
+
+## Media
+
+### POST /api/chats/{id}/media?name=<file name>&caption=<optional text>
+
+Uploads a file and creates a message in the dialog atomically.
+
+- Headers: `Authorization: Bearer <token>`, `Content-Type: <MIME type>`;
+  the request body is the raw file.
+- `name` is the original file name (URL-encoded, ≤ 128 characters, path
+  separators/control characters are stripped server-side).
+- `caption` is optional message text (≤ 4096 characters; the same validation as
+  `send_message`).
+- Limits: file size up to `media.max_upload_mb` (default 25 MiB); allowed MIME
+  types: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`,
+  `text/plain`, `application/zip`, `video/mp4`. MIME types are validated; other
+  types return `415`.
+- Only dialog participants may upload (`403` otherwise, `404` for an unknown
+  dialog). Rate-limited like the rest of the HTTP API.
+- `200` response — the created `MessageItem` (see `/api/history`), with
+  `is_media: true`. The server also broadcasts `new_message` to the dialog
+  subscribers (`is_outgoing` is `false` in the broadcast; clients should compare
+  `sender_id` with their own user id).
+- Errors: `400` (bad name/caption), `403`, `404`, `413` (too large),
+  `415` (unsupported type), `429`.
+
+### GET /api/media/{message_id}
+
+Returns the file bytes of a media message.
+
+- Requires authentication and dialog participation (`401`/`403`/`404`).
+- `200` with the stored `Content-Type`; images are served with
+  `Content-Disposition: inline`, other files with `attachment` and a
+  `filename*=UTF-8''...` name. Responses are marked `Cache-Control: private`,
+  `X-Content-Type-Options: nosniff`.
+- Only messages with `is_media: true` can be fetched; otherwise `404`.
+
+The UI must fetch media with the `Authorization` header (not via a plain
+`<img src>`), e.g. `fetch('/api/media/105')` and `URL.createObjectURL`.
 
 ## WebSocket `/ws`
 

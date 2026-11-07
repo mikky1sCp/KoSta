@@ -30,13 +30,17 @@ export interface ChatItem {
 export interface Message {
   id: number;
   sender_id: number;
+  /** Для медиа может быть пустым (файл без подписи). */
   text: string;
   timestamp: number;
   is_outgoing: boolean;
   read: boolean;
   delivered: boolean;
-  media_path: string | null;
+  /** Оригинальное имя файла (санитизировано сервером). */
+  media_name: string | null;
+  /** MIME-тип файла. */
   media_type: string | null;
+  /** Размер файла в байтах. */
   media_size: number | null;
   is_media: boolean;
 }

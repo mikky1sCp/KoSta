@@ -49,7 +49,11 @@ export function ChatListItem({ chat, active, onSelect }: ChatListItemProps) {
         </span>
         <span className="mt-0.5 flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-xs text-muted">
-            {chat.last_message || 'Нет сообщений'}
+            {/* Медиа без подписи приходит с пустым text — показываем «Файл». */}
+            {chat.last_message?.trim() ||
+              (chat.last_timestamp != null && chat.last_timestamp > 0
+                ? 'Файл'
+                : 'Нет сообщений')}
           </span>
           {unread && (
             <span

@@ -559,17 +559,15 @@ fn handle_get_history(req: GetHistory, db: &Database, auth_key_id: Option<i64>) 
     // исходящее, только если его отправил текущий пользователь.
     let messages: Vec<Message> = rows
         .into_iter()
-        .map(|(id, sender_id, text, ts, _out, read, delivered, _media_path, _media_type, _media_size, _is_media)| {
-            Message {
-                id: MessageId(id),
-                chat_id: req.chat_id,
-                sender_id: UserId(sender_id),
-                text,
-                timestamp: ts,
-                is_outgoing: sender_id == user_id,
-                read,
-                delivered,
-            }
+        .map(|row| Message {
+            id: MessageId(row.id),
+            chat_id: req.chat_id,
+            sender_id: UserId(row.sender_id),
+            text: row.text,
+            timestamp: row.timestamp,
+            is_outgoing: row.sender_id == user_id,
+            read: row.read,
+            delivered: row.delivered,
         })
         .collect();
 
@@ -758,6 +756,14 @@ fn handle_remove_group_participant(
             unread_count: 0,
         };
         db.delete_empty_dialog(dialog_id)?;
+        // Медиа-файлы удалённого диалога не должны оставаться на диске.
+        // Ошибку только логируем: диалог уже удалён, ответ клиенту важнее.
+        if let Err(e) = crate::media::delete_dialog(dialog_id) {
+            warn!(
+                "Failed to delete media of empty dialog {}: {:#}",
+                dialog_id, e
+            );
+        }
         return dialog_info_response(info);
     }
     dialog_info_reply(dialog_id, user_id, db)

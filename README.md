@@ -60,8 +60,8 @@ is described in [docs/web-api.md](docs/web-api.md).
 
 UI features: login/registration, chat list with search and unread badges, private chats
 and groups, group administration (admin-only add/remove, rename, leave), online status,
-typing indicators, read receipts, message history pagination, light/dark theme and a
-responsive mobile layout.
+typing indicators, read receipts, message history pagination, photo and file attachments,
+light/dark theme and a responsive mobile layout.
 
 ## End-to-end checks
 
@@ -122,7 +122,9 @@ Configured in `config.toml`:
 | `idle_timeout_secs` | 300 | connection is closed after this much silence |
 | `max_connections` | 256 | excess connections are dropped immediately |
 | `web.host` / `web.port` | 127.0.0.1 / 8081 | web API, WebSocket and static UI |
-| `web.ui_dir` | `web-ui` | directory with `index.html` (`KOSTA_WEB_UI_DIR` overrides) |
+| `web.ui_dir` | `web-ui/dist` | built UI directory with `index.html` (`KOSTA_WEB_UI_DIR` overrides) |
+| `media.dir` | `media` | directory for uploaded files (`KOSTA_MEDIA_DIR` overrides) |
+| `media.max_upload_mb` | 25 | maximum size of a single upload, MiB |
 
 Additionally, the server caps the handshake store at 10 000 pending handshakes with a 60 s
 TTL, rate-limits handshakes to 30 per minute per IP, logins to 10 per minute per IP,
@@ -177,11 +179,20 @@ max_connections = 256
 [web]
 host = "127.0.0.1"
 port = 8081
-ui_dir = "web-ui"
+ui_dir = "web-ui/dist"
+
+[media]
+# Directory for uploaded files (KOSTA_MEDIA_DIR overrides)
+dir = "media"
+# Maximum size of a single upload, MiB
+max_upload_mb = 25
 ```
 
 The database schema is migrated on startup (new columns for media, group admins and
 session timestamps), foreign keys are enabled, and SQLite runs in WAL mode.
+Uploaded files are stored on disk under `media/<dialog_id>/` with random names; the
+allowed MIME types are PNG/JPEG/WebP/GIF, PDF, plain text, ZIP and MP4. Files are
+served only to dialog participants through an authenticated endpoint.
 
 ## Layout
 
@@ -207,8 +218,10 @@ API/WebSocket contract; `scripts/` holds the Node.js smoke tests.
   stays open, so a client waiting for a reply can only rely on its own timeout.
 - The web UI requires a build step (`npm run build`); the Rust server serves `web-ui/dist`
   and needs Node.js 24+ for the Vite build.
+- Media support is local-disk and whitelist-based: no thumbnails/transcoding, no virus
+  scanning, and orphaned files are only removed together with their dialog.
 - An authenticated user can check whether an exact phone number is registered
   (`/api/users/lookup`, rate-limited); there is no contact discovery beyond that.
 - Groups have a minimal role model (admins can add/remove members); there is no
-  ban list, message editing/deletion in the protocol yet, and media upload is not exposed
-  by the web API.
+  ban list, message editing/deletion in the protocol yet, and media upload is limited
+  to the supported MIME types.

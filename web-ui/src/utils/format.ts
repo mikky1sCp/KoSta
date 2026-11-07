@@ -82,6 +82,26 @@ export function isSameDay(a: number, b: number): boolean {
   return startOfDay(new Date(a * 1000)) === startOfDay(new Date(b * 1000));
 }
 
+const BYTE_UNITS = ['Б', 'КБ', 'МБ', 'ГБ'] as const;
+
+/** Размер файла для карточки вложения: «980 Б», «12,4 КБ», «3 МБ». */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) {
+    return '—';
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} Б`;
+  }
+  let value = bytes / 1024;
+  let unitIndex = 1;
+  while (value >= 1024 && unitIndex < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const formatted = value < 10 ? value.toFixed(1).replace('.', ',') : String(Math.round(value));
+  return `${formatted} ${BYTE_UNITS[unitIndex]}`;
+}
+
 /** Ключ дня для группировки сообщений разделителями. */
 export function dayKey(timestampSeconds: number): string {
   const date = new Date(timestampSeconds * 1000);

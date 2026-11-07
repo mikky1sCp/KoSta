@@ -15,3 +15,9 @@ max_connections = 256
 host = "127.0.0.1"
 port = 8081
 ui_dir = "web-ui/dist"
+
+[media]
+# Каталог для загруженных файлов (KOSTA_MEDIA_DIR переопределяет)
+dir = "media"
+# Максимальный размер одного файла, МБ
+max_upload_mb = 25

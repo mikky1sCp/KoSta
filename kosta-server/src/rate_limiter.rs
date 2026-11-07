@@ -66,6 +66,11 @@ lazy_static! {
     /// Логин/регистрация: bcrypt на каждый запрос, поэтому лимит отдельный и жёсткий.
     pub static ref LOGIN_LIMITER: RateLimiter<String> =
         RateLimiter::new(Duration::from_secs(60), 10);  // 10 попыток входа в минуту с IP
+    /// Загрузка медиа: запись на диск и сообщение в историю. Считаем по
+    /// пользователю (а не по IP), чтобы общий HTTP-лимит не был единственной
+    /// защитой от заваливания диска файлами.
+    pub static ref MEDIA_LIMITER: RateLimiter<i64> =
+        RateLimiter::new(Duration::from_secs(60), 30);  // 30 загрузок в минуту на пользователя
     /// Регистрация по бинарному протоколу (SignUp): дороже, чем кажется (bcrypt).
     pub static ref SIGNUP_LIMITER: RateLimiter<String> =
         RateLimiter::new(Duration::from_secs(3600), 5); // 5 регистраций в час с IP

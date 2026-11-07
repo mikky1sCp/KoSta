@@ -36,19 +36,50 @@ pub struct Database {
 }
 
 /// Строка истории сообщений.
-pub type HistoryRow = (
-    i64,
-    i64,
-    String,
-    i64,
-    bool,
-    bool,
-    bool,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-    bool,
-);
+///
+/// Явные поля вместо позиционного кортежа: media-поля легко перепутать
+/// местами (раньше `edited_at`/`deleted` уезжали в `media_size`/`is_media`).
+#[derive(Debug, Clone)]
+pub struct HistoryRow {
+    pub id: i64,
+    pub sender_id: i64,
+    pub text: String,
+    pub timestamp: i64,
+    /// «Как видел отправитель»; web-слой пересчитывает для зрителя.
+    /// Поле оставлено явным (и читается в тестах), чтобы не терять колонку
+    /// при будущих запросах истории.
+    #[allow(dead_code)]
+    pub is_outgoing: bool,
+    pub read: bool,
+    pub delivered: bool,
+    /// Ключ хранения в media-хранилище (`<dialog_id>/<hex>.<ext>`).
+    /// Наружу через API не отдаётся.
+    pub media_path: Option<String>,
+    /// MIME-тип из белого списка (для Content-Type при скачивании).
+    pub media_type: Option<String>,
+    pub media_size: Option<i64>,
+    pub media_name: Option<String>,
+}
+
+impl HistoryRow {
+    /// Медиа-сообщение: есть ключ хранения.
+    pub fn is_media(&self) -> bool {
+        self.media_path.is_some()
+    }
+}
+
+/// Метаданные медиа-сообщения для `GET /api/media/{message_id}`.
+#[derive(Debug, Clone)]
+pub struct MediaMessageRow {
+    pub dialog_id: i64,
+    pub media_key: String,
+    pub mime: String,
+    /// Размер полезен для диагностики/будущей проверки целостности;
+    /// тело ответа отдаётся из файла, поэтому в хендлере не читается.
+    #[allow(dead_code)]
+    pub size: Option<i64>,
+    pub name: Option<String>,
+}
 
 /// Строка списка чатов для web-API: заголовок уже разрешён
 /// (телефон собеседника для личного диалога, название для группы).
@@ -296,6 +327,8 @@ impl Database {
         // messages: медиа и редактирование
         ensure_column(&conn, "messages", "media_path", "TEXT")?;
         ensure_column(&conn, "messages", "media_type", "TEXT")?;
+        ensure_column(&conn, "messages", "media_size", "INTEGER")?;
+        ensure_column(&conn, "messages", "media_name", "TEXT")?;
         ensure_column(&conn, "messages", "edited_at", "INTEGER")?;
         ensure_column(&conn, "messages", "deleted", "INTEGER NOT NULL DEFAULT 0")?;
         // dialog_participants: роли (создатель группы — администратор)
@@ -957,6 +990,62 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Сохраняет сообщение с медиа-вложением и возвращает его id.
+    ///
+    /// Отдельно от [`Self::save_message`], потому что у медиа-сообщения есть
+    /// обязательные метаданные (ключ хранения, MIME, размер, имя), и путать
+    /// эти два пути нежелательно.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_media_message(
+        &self,
+        dialog_id: i64,
+        sender_id: i64,
+        text: &str,
+        timestamp: i64,
+        media_key: &str,
+        mime: &str,
+        size: i64,
+        name: &str,
+    ) -> Result<i64> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "INSERT INTO messages
+                (dialog_id, sender_id, text, timestamp, is_outgoing,
+                 media_path, media_type, media_size, media_name)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8)",
+            rusqlite::params![dialog_id, sender_id, text, timestamp, media_key, mime, size, name],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Метаданные медиа-сообщения для скачивания.
+    ///
+    /// `None` — сообщения нет, оно удалено или это обычный текст.
+    /// MIME у старых записей может быть пустым: отдаём безопасный fallback.
+    pub fn get_media_message(&self, message_id: i64) -> Result<Option<MediaMessageRow>> {
+        let conn = self.get_conn()?;
+        let found = conn
+            .query_row(
+                "SELECT dialog_id, media_path, media_type, media_size, media_name
+                 FROM messages
+                 WHERE id = ?1 AND deleted = 0 AND media_path IS NOT NULL",
+                rusqlite::params![message_id],
+                |row| {
+                    Ok(MediaMessageRow {
+                        dialog_id: row.get(0)?,
+                        media_key: row.get(1)?,
+                        mime: row
+                            .get::<_, Option<String>>(2)?
+                            .unwrap_or_else(|| "application/octet-stream".to_string()),
+                        size: row.get(3)?,
+                        name: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(found)
+    }
+
     pub fn get_history(
         &self,
         dialog_id: i64,
@@ -970,30 +1059,27 @@ impl Database {
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, sender_id, text, timestamp, is_outgoing, read_status, delivered_status,
-                    media_path, media_type, edited_at, deleted
+                    media_path, media_type, media_size, media_name
              FROM messages
              WHERE dialog_id = ?1 AND deleted = 0
              ORDER BY timestamp DESC
              LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(
-            rusqlite::params![dialog_id, limit, offset],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get::<_, i32>(4)? != 0,
-                    row.get::<_, i32>(5)? != 0,
-                    row.get::<_, i32>(6)? != 0,
-                    row.get(7)?,
-                    row.get(8)?,
-                    row.get(9)?,
-                    row.get::<_, i32>(10)? != 0,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(rusqlite::params![dialog_id, limit, offset], |row| {
+            Ok(HistoryRow {
+                id: row.get(0)?,
+                sender_id: row.get(1)?,
+                text: row.get(2)?,
+                timestamp: row.get(3)?,
+                is_outgoing: row.get::<_, i32>(4)? != 0,
+                read: row.get::<_, i32>(5)? != 0,
+                delivered: row.get::<_, i32>(6)? != 0,
+                media_path: row.get(7)?,
+                media_type: row.get(8)?,
+                media_size: row.get(9)?,
+                media_name: row.get(10)?,
+            })
+        })?;
         let mut msgs = Vec::new();
         for msg in rows {
             msgs.push(msg?);
@@ -1565,6 +1651,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(last_used, 123, "last_used_at должен быть заполнен из created_at");
+        // Media-колонки добавляются в старую БД, и через них уже можно
+        // сохранять/читать медиа-сообщение.
+        let media_id = db
+            .save_media_message(
+                10,
+                1,
+                "подпись",
+                0,
+                "10/0123456789abcdef0123456789abcdef.png",
+                "image/png",
+                3,
+                "a.png",
+            )
+            .expect("media-колонки должны появиться в старой БД");
+        assert_eq!(
+            db.get_media_message(media_id)
+                .unwrap()
+                .expect("медиа-сообщение читается")
+                .media_key,
+            "10/0123456789abcdef0123456789abcdef.png"
+        );
         let removed = db.purge_stale_sessions(3600, 30 * 86_400).unwrap();
         assert_eq!(removed, 1, "очень старая сессия удаляется очисткой");
         drop(db);
@@ -1766,5 +1873,114 @@ mod tests {
             "любой статус кроме 0 — offline"
         );
         assert!(t.db.get_user_profile(999_999).unwrap().is_none());
+    }
+
+    #[test]
+    fn media_message_roundtrip_in_history_and_by_id() {
+        let t = TempDb::new();
+        let u1 = t.db.create_user("+2200", "pass").unwrap();
+        let u2 = t.db.create_user("+2201", "pass").unwrap();
+        let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+        let media_key = format!("{dialog_id}/0123456789abcdef0123456789abcdef.png");
+
+        let message_id = t
+            .db
+            .save_media_message(
+                dialog_id,
+                u1,
+                "подпись",
+                1_234,
+                &media_key,
+                "image/png",
+                5,
+                "photo.png",
+            )
+            .unwrap();
+
+        let history = t.db.get_history(dialog_id, 0, 50).unwrap();
+        assert_eq!(history.len(), 1);
+        let row = &history[0];
+        assert_eq!(row.id, message_id);
+        assert_eq!(row.sender_id, u1);
+        assert_eq!(row.text, "подпись");
+        assert_eq!(row.timestamp, 1_234);
+        assert!(row.is_outgoing);
+        assert!(!row.read);
+        assert!(!row.delivered);
+        assert_eq!(row.media_path.as_deref(), Some(media_key.as_str()));
+        assert_eq!(row.media_type.as_deref(), Some("image/png"));
+        assert_eq!(row.media_size, Some(5));
+        assert_eq!(row.media_name.as_deref(), Some("photo.png"));
+        assert!(row.is_media(), "media_path IS NOT NULL => is_media");
+
+        let media = t
+            .db
+            .get_media_message(message_id)
+            .unwrap()
+            .expect("медиа-сообщение должно читаться по id");
+        assert_eq!(media.dialog_id, dialog_id);
+        assert_eq!(media.media_key, media_key);
+        assert_eq!(media.mime, "image/png");
+        assert_eq!(media.size, Some(5));
+        assert_eq!(media.name.as_deref(), Some("photo.png"));
+
+        // Сообщение другого диалога/несуществующее — None.
+        assert!(t.db.get_media_message(999_999).unwrap().is_none());
+    }
+
+    #[test]
+    fn plain_message_has_no_media_metadata_and_cannot_be_downloaded() {
+        let t = TempDb::new();
+        let u1 = t.db.create_user("+2202", "pass").unwrap();
+        let u2 = t.db.create_user("+2203", "pass").unwrap();
+        let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+
+        let message_id = t
+            .db
+            .save_message(dialog_id, u1, "просто текст", 10, true, None, None)
+            .unwrap();
+
+        let row = t.db.get_history(dialog_id, 0, 10).unwrap().remove(0);
+        assert!(!row.is_media());
+        assert!(row.media_path.is_none());
+        assert!(row.media_type.is_none());
+        assert!(row.media_size.is_none());
+        assert!(row.media_name.is_none());
+        assert!(
+            t.db.get_media_message(message_id).unwrap().is_none(),
+            "обычный текст не скачивается как медиа"
+        );
+    }
+
+    #[test]
+    fn deleted_media_message_disappears_from_history_and_download() {
+        let t = TempDb::new();
+        let u1 = t.db.create_user("+2204", "pass").unwrap();
+        let u2 = t.db.create_user("+2205", "pass").unwrap();
+        let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+        let message_id = t
+            .db
+            .save_media_message(
+                dialog_id,
+                u1,
+                "",
+                10,
+                &format!("{dialog_id}/0123456789abcdef0123456789abcdef.png"),
+                "image/png",
+                1,
+                "a.png",
+            )
+            .unwrap();
+
+        t.db.get_conn()
+            .unwrap()
+            .execute(
+                "UPDATE messages SET deleted = 1 WHERE id = ?1",
+                rusqlite::params![message_id],
+            )
+            .unwrap();
+
+        assert!(t.db.get_history(dialog_id, 0, 10).unwrap().is_empty());
+        assert!(t.db.get_media_message(message_id).unwrap().is_none());
     }
 }
