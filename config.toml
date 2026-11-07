@@ -9,3 +9,9 @@ key_path = "key.pem"
 idle_timeout_secs = 300
 # Maximum number of simultaneous TCP connections
 max_connections = 256
+
+[web]
+# Web API + WebSocket + static UI
+host = "127.0.0.1"
+port = 8081
+ui_dir = "web-ui"

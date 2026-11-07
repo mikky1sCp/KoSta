@@ -50,8 +50,21 @@ impl<K: Eq + std::hash::Hash + Clone> RateLimiter<K> {
 lazy_static! {
     pub static ref WS_MESSAGE_LIMITER: RateLimiter<i64> =
         RateLimiter::new(Duration::from_secs(1), 10);   // 10 сообщений в секунду на пользователя
+    /// Попытки авторизации в WebSocket (токен может быть перебираемым/устаревшим).
+    pub static ref WS_AUTH_LIMITER: RateLimiter<String> =
+        RateLimiter::new(Duration::from_secs(60), 10);  // 10 попыток auth в минуту с IP
+    /// Общий лимит кадров WebSocket с одного IP: до auth соединение анонимно,
+    /// поэтому даже мусорный JSON не должен бесконечно писать в лог.
+    pub static ref WS_FRAME_LIMITER: RateLimiter<String> =
+        RateLimiter::new(Duration::from_secs(1), 60);   // 60 кадров в секунду с IP
     pub static ref HTTP_LIMITER: RateLimiter<String> =
         RateLimiter::new(Duration::from_secs(60), 100); // 100 запросов в минуту с IP
+    /// Логин/регистрация: bcrypt на каждый запрос, поэтому лимит отдельный и жёсткий.
+    pub static ref LOGIN_LIMITER: RateLimiter<String> =
+        RateLimiter::new(Duration::from_secs(60), 10);  // 10 попыток входа в минуту с IP
+    /// Регистрация по бинарному протоколу (SignUp): дороже, чем кажется (bcrypt).
+    pub static ref SIGNUP_LIMITER: RateLimiter<String> =
+        RateLimiter::new(Duration::from_secs(3600), 5); // 5 регистраций в час с IP
     /// Рукопожатие на TCP-протоколе: до авторизации соединение анонимно,
     /// а ReqDHParams стоит серверу 2048-битного modpow.
     pub static ref TCP_HANDSHAKE_LIMITER: RateLimiter<String> =

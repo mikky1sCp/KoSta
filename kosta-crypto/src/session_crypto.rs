@@ -148,7 +148,9 @@ impl SessionCrypto {
     /// Шифрует сообщение для отправки (использует client ключи)
     pub fn encrypt_outgoing(&mut self, plaintext: &[u8]) -> Result<(Nonce, Vec<u8>, Tag), CryptoError> {
         let nonce = generate_nonce(self.send_counter);
-        self.send_counter += 1;
+        // wrapping_add вместо `+=`: переполнение счётчика не должно паниковать
+        // в debug-сборке; семантика nonce (счётчик в старших 4 байтах) та же.
+        self.send_counter = self.send_counter.wrapping_add(1);
         let (ciphertext, tag) = encrypt_and_tag(
             &self.client_write_key,
             &self.client_mac_key,
@@ -167,14 +169,14 @@ impl SessionCrypto {
             ciphertext,
             tag,
         )?;
-        self.recv_counter += 1;
+        self.recv_counter = self.recv_counter.wrapping_add(1);
         Ok(plaintext)
     }
 
     /// Шифрует сообщение для отправки от сервера (использует server ключи)
     pub fn encrypt_outgoing_server(&mut self, plaintext: &[u8]) -> Result<(Nonce, Vec<u8>, Tag), CryptoError> {
         let nonce = generate_nonce(self.send_counter);
-        self.send_counter += 1;
+        self.send_counter = self.send_counter.wrapping_add(1);
         let (ciphertext, tag) = encrypt_and_tag(
             &self.server_write_key,
             &self.server_mac_key,
@@ -193,7 +195,7 @@ impl SessionCrypto {
             ciphertext,
             tag,
         )?;
-        self.recv_counter += 1;
+        self.recv_counter = self.recv_counter.wrapping_add(1);
         Ok(plaintext)
     }
 }
@@ -239,5 +241,39 @@ mod tests {
 
         let result = decrypt_and_verify(&client_write_key, &client_mac_key, &nonce, &ciphertext, &tag);
         assert!(result.is_err());
+    }
+
+    /// Переполнение счётчиков не должно паниковать (раньше `+= 1` паниковал
+    /// в debug-сборке на `u32::MAX`).
+    #[test]
+    fn counters_wrap_instead_of_panicking() {
+        let shared = [7u8; 32];
+        let client_nonce = [1u8; 16];
+        let server_nonce = [2u8; 16];
+        let (cw, cm, sw, sm) = derive_keys(&shared, &client_nonce, &server_nonce);
+
+        let mut sender = SessionCrypto::from_keys(cw, cm, sw, sm, u32::MAX, u32::MAX);
+        let mut receiver = SessionCrypto::from_keys(cw, cm, sw, sm, u32::MAX, u32::MAX);
+
+        let _sender_msg = sender.encrypt_outgoing(b"outgoing").unwrap();
+        assert_eq!(sender.send_counter, 0, "send_counter должен перескочить через 0");
+
+        let (nonce, ciphertext, tag) = sender.encrypt_outgoing_server(b"server").unwrap();
+        assert_eq!(sender.send_counter, 1);
+
+        // decrypt_incoming раньше тоже паниковал на переполнении recv_counter.
+        let decrypted = receiver.decrypt_incoming(&nonce, &ciphertext, &tag).unwrap();
+        assert_eq!(decrypted, b"server".to_vec());
+        assert_eq!(receiver.recv_counter, 0, "recv_counter должен перескочить через 0");
+        assert_eq!(receiver.send_counter, u32::MAX, "чужой счётчик не трогается");
+
+        // Симметричный путь decrypt_incoming_server проверяем отдельно.
+        let mut receiver_client = SessionCrypto::from_keys(cw, cm, sw, sm, 0, u32::MAX);
+        let (nonce2, ciphertext2, tag2) = sender.encrypt_outgoing(b"client").unwrap();
+        let decrypted2 = receiver_client
+            .decrypt_incoming_server(&nonce2, &ciphertext2, &tag2)
+            .unwrap();
+        assert_eq!(decrypted2, b"client".to_vec());
+        assert_eq!(receiver_client.recv_counter, 0);
     }
 }

@@ -5,6 +5,7 @@ use rand::Rng;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use std::io::Cursor;
+use std::net::SocketAddr;
 use num_bigint::BigUint;
 use num_traits::One;
 use kosta_core::tl::constructors::*;
@@ -15,7 +16,7 @@ use kosta_crypto::padding;
 use kosta_crypto::session_crypto::SessionCrypto;
 use kosta_transport::Transport;
 use tracing::{info, warn};
-use kosta::dh_checks::{is_prime, validate_public_value};
+use kosta_crypto::dh_checks::{is_prime, validate_public_value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, Duration};
@@ -25,9 +26,35 @@ use std::num::NonZeroUsize;
 
 use crate::db::Database;
 use crate::db::SessionRow;
+use crate::rate_limiter::{check_limit, SIGNUP_LIMITER};
 use crate::session_cache::SessionCache;
 use crate::server_keys::get_server_keypair;
 use crate::dh_params::{DH_PRIME, DH_G};
+
+/// Максимальная длина текста сообщения (символы, не байты).
+const MAX_MESSAGE_CHARS: usize = 4096;
+/// Максимальная длина названия группы.
+const MAX_GROUP_TITLE_CHARS: usize = 128;
+/// Максимальное число участников группы (включая создателя).
+const MAX_GROUP_PARTICIPANTS: usize = 200;
+
+/// Пределы для пагинации истории. SQLite трактует отрицательный LIMIT как
+/// «без лимита», поэтому значение ограничивается и в хендлере, и в БД.
+fn clamp_history(limit: i32, offset: i32) -> (i32, i32) {
+    (limit.clamp(1, 200), offset.max(0))
+}
+
+/// Телефон: необязательный "+", 5..=20 цифр, ничего кроме цифр.
+fn is_valid_phone(phone: &str) -> bool {
+    let digits = phone.strip_prefix('+').unwrap_or(phone);
+    digits.len() <= 20 && digits.len() >= 5 && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Пароль: 8..=128 символов (bcrypt всё равно использует максимум 72 байта,
+/// но ограничение длины защищает от гигантских тел запросов).
+fn is_valid_password(password: &str) -> bool {
+    (8..=128).contains(&password.chars().count())
+}
 
 // Хранилище для временных данных handshake с временем создания
 type HandshakeRecord = (Int256, Vec<u8>, Instant);
@@ -83,11 +110,18 @@ fn generate_random_prime(bits: usize) -> BigUint {
     }
 }
 
-// Вспомогательная функция для получения user_id из auth_key_id
+// Вспомогательная функция для получения user_id из auth_key_id.
+// user_id = 0 — системный пользователь: такие сессии ещё не прошли SignUp,
+// и им нельзя разрешать создавать диалоги/писать сообщения.
 fn get_user_id(auth_key_id: Option<i64>, db: &Database) -> Result<i64> {
     let id = auth_key_id.ok_or_else(|| anyhow!("Missing auth_key_id"))?;
-    let session = db.get_session(id)?.ok_or_else(|| anyhow!("Session not found"))?;
-    Ok(session.0)
+    let user_id = db
+        .get_session_user_id(id)?
+        .ok_or_else(|| anyhow!("Session not found"))?;
+    if user_id == 0 {
+        return Err(anyhow!("Session is not signed up"));
+    }
+    Ok(user_id)
 }
 
 /// Проверяет, что пользователь является участником диалога.
@@ -110,6 +144,7 @@ pub fn handle_request(
     cache: &SessionCache,
     db: &Database,
     auth_key_id: Option<i64>,
+    peer: SocketAddr,
 ) -> Result<Option<Vec<u8>>> {
     match obj {
         // Существующие handshake
@@ -128,7 +163,7 @@ pub fn handle_request(
         // Пользовательские
         TlObject::SignUp(req) => {
             info!("Received SignUp");
-            handle_sign_up(req, db, cache, auth_key_id)
+            handle_sign_up(req, db, cache, auth_key_id, peer)
         }
         TlObject::SendMessage(req) => {
             info!("Received SendMessage");
@@ -193,7 +228,7 @@ fn handle_req_pq(req: ReqPq) -> Result<Option<Vec<u8>>> {
     let q_bytes = q.to_bytes_be();
     info!("Generated pq ({} bytes), p ({} bytes), q ({} bytes)", pq.len(), p_bytes.len(), q_bytes.len());
 
-    let keypair = get_server_keypair();
+    let keypair = get_server_keypair()?;
     let fingerprint = compute_key_fingerprint(&keypair.public);
 
     let res = ResPQ {
@@ -242,9 +277,15 @@ fn handle_req_dh_params(
     let new_nonce = pq_inner.new_nonce.clone();
     info!("Received new_nonce from client");
 
+    let keypair = get_server_keypair()?;
+    let expected_fingerprint = compute_key_fingerprint(&keypair.public);
+    if req.public_key_fingerprint != expected_fingerprint {
+        return Err(anyhow!("Unknown server public key fingerprint"));
+    }
+
     let dh_prime = &*DH_PRIME;
     let g = &*DH_G;
-    let a = kosta_crypto::dh::generate_private_key() % dh_prime;
+    let a = kosta_crypto::dh::generate_private_key_in_range(dh_prime);
     let g_a = kosta_crypto::dh::compute_public_key(g, &a, dh_prime);
 
     let mut key = Vec::with_capacity(32);
@@ -268,7 +309,7 @@ fn handle_req_dh_params(
     let padded = padding::pad(&inner_bytes);
     let encrypted_answer = encrypt_inner(&tmp_key_encrypt, &nonce_gcm_encrypt, &padded)?;
 
-    let keypair = get_server_keypair();
+    let keypair = get_server_keypair()?;
     let mut data_to_sign = Vec::new();
     req.nonce.write_bytes(&mut data_to_sign)?;
     req.server_nonce.write_bytes(&mut data_to_sign)?;
@@ -384,6 +425,7 @@ fn handle_set_client_dh_params(
         send_seq_no: -1,
         msg_id_counter: 0,
         recent_msg_ids: recent,
+        last_used_at: Instant::now(),
     };
     cache.update_session(auth_key_id, session_data)?;
 
@@ -427,20 +469,36 @@ fn handle_sign_up(
     db: &Database,
     cache: &SessionCache,
     auth_key_id: Option<i64>,
+    peer: SocketAddr,
 ) -> Result<Option<Vec<u8>>> {
-    let user_id = db.create_user(&req.phone, &req.password)?;
-    if let Some(id) = auth_key_id {
-        db.update_session_user_id(id, user_id)?;
-        // Атомарно: иначе параллельно обрабатываемое сообщение могло
-        // перезаписать user_id устаревшим клоном сессии.
-        if let Err(e) = cache.mutate_session(id, |session| {
-            session.user_id = user_id;
-            Ok(())
-        }) {
-            warn!("Failed to attach user {} to session: {:#}", user_id, e);
-        }
+    // Регистрация создаёт пользователя и bcrypt-хеш — операция дорогая,
+    // поэтому лимит отдельный от обычных сообщений.
+    check_limit(&SIGNUP_LIMITER, peer.ip().to_string())
+        .map_err(|e| anyhow!("SignUp rate limit exceeded: {}", e))?;
+    if !is_valid_phone(&req.phone) {
+        return Err(anyhow!("Invalid phone number"));
     }
-    info!("User registered with phone: {}", req.phone);
+    if !is_valid_password(&req.password) {
+        return Err(anyhow!("Password must be 8..=128 characters"));
+    }
+    let session_id = auth_key_id.ok_or_else(|| {
+        anyhow!("SignUp requires an established session (complete the DH handshake first)")
+    })?;
+    if db.get_user_id_by_phone(&req.phone)?.is_some() {
+        return Err(anyhow!("Phone number is already registered"));
+    }
+
+    let user_id = db.create_user(&req.phone, &req.password)?;
+    db.update_session_user_id(session_id, user_id)?;
+    // Атомарно: иначе параллельно обрабатываемое сообщение могло
+    // перезаписать user_id устаревшим клоном сессии.
+    if let Err(e) = cache.mutate_session(session_id, |session| {
+        session.user_id = user_id;
+        Ok(())
+    }) {
+        warn!("Failed to attach user {} to session: {:#}", user_id, e);
+    }
+    info!("User registered: id={}", user_id);
     Ok(None)
 }
 
@@ -451,18 +509,31 @@ fn handle_send_message(req: SendMessage, db: &Database, auth_key_id: Option<i64>
     let dialog_id = req.chat_id.0; // ChatId -> i64
     ensure_participant(db, dialog_id, user_id)?;
 
+    // Пустые сообщения не сохраняем: они бесполезны и засоряют историю.
+    let text = req.text.trim();
+    if text.is_empty() {
+        return Err(anyhow!("Message text is empty"));
+    }
+    if text.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(anyhow!(
+            "Message is too long: {} characters (max {})",
+            text.chars().count(),
+            MAX_MESSAGE_CHARS
+        ));
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let msg_id = db.save_message(dialog_id, user_id, &req.text, now, true, None, None)?;
+    let msg_id = db.save_message(dialog_id, user_id, text, now, true, None, None)?;
 
     // Строим ответное сообщение (используем старую структуру Message с chat_id = dialog_id)
     let message = Message {
         id: MessageId(msg_id),
         chat_id: req.chat_id, // храним как диалог
         sender_id: UserId(user_id),
-        text: req.text,
+        text: text.to_string(),
         timestamp: now,
         is_outgoing: true,
         read: false,
@@ -481,18 +552,21 @@ fn handle_get_history(req: GetHistory, db: &Database, auth_key_id: Option<i64>) 
     let dialog_id = req.chat_id.0;
     ensure_participant(db, dialog_id, user_id)?;
 
-    let rows = db.get_history(dialog_id, req.offset, req.limit)?;
-    // rows: Vec<(id, sender_id, text, ts, out, read, delivered, media_path, media_type, media_size, is_media)>
+    let (limit, offset) = clamp_history(req.limit, req.offset);
+    let rows = db.get_history(dialog_id, offset, limit)?;
+    // `messages.is_outgoing` — это «как видел отправитель», одна колонка на
+    // всех. Для истории правильная семантика зависит от зрителя: сообщение
+    // исходящее, только если его отправил текущий пользователь.
     let messages: Vec<Message> = rows
         .into_iter()
-        .map(|(id, sender_id, text, ts, out, read, delivered, _media_path, _media_type, _media_size, _is_media)| {
+        .map(|(id, sender_id, text, ts, _out, read, delivered, _media_path, _media_type, _media_size, _is_media)| {
             Message {
                 id: MessageId(id),
                 chat_id: req.chat_id,
                 sender_id: UserId(sender_id),
                 text,
                 timestamp: ts,
-                is_outgoing: out,
+                is_outgoing: sender_id == user_id,
                 read,
                 delivered,
             }
@@ -512,7 +586,13 @@ fn handle_get_history(req: GetHistory, db: &Database, auth_key_id: Option<i64>) 
 
 // ---------- SendMessageAck ----------
 fn handle_send_ack(req: SendMessageAck, db: &Database, auth_key_id: Option<i64>) -> Result<Option<Vec<u8>>> {
-    let _user_id = get_user_id(auth_key_id, db)?;
+    let user_id = get_user_id(auth_key_id, db)?;
+    // Без этой проверки любой авторизованный клиент мог пометить delivered
+    // чужое сообщение, зная только его id.
+    let dialog_id = db
+        .get_message_dialog_id(req.message_id.0)?
+        .ok_or_else(|| anyhow!("Message {} not found", req.message_id.0))?;
+    ensure_participant(db, dialog_id, user_id)?;
     db.mark_message_delivered(req.message_id.0)?;
     Ok(None)
 }
@@ -546,12 +626,14 @@ fn handle_create_private_dialog(
     auth_key_id: Option<i64>,
 ) -> Result<Option<Vec<u8>>> {
     let user_id = get_user_id(auth_key_id, db)?;
+    if req.user_id.0 == user_id {
+        return Err(anyhow!("Cannot create a private dialog with yourself"));
+    }
+    if !db.user_exists(req.user_id.0)? {
+        return Err(anyhow!("Target user not found"));
+    }
     let dialog_id = db.create_private_dialog(user_id, req.user_id.0)?;
-    let info = build_dialog_info(dialog_id, user_id, db)?;
-    let obj = TlObject::DialogInfo(info);
-    let mut buf = Vec::new();
-    obj.write_boxed(&mut buf)?;
-    Ok(Some(buf))
+    dialog_info_reply(dialog_id, user_id, db)
 }
 
 // ---------- CreateGroup ----------
@@ -561,13 +643,38 @@ fn handle_create_group(
     auth_key_id: Option<i64>,
 ) -> Result<Option<Vec<u8>>> {
     let user_id = get_user_id(auth_key_id, db)?;
-    let participants: Vec<i64> = req.participants.iter().map(|u| u.0).collect();
-    let dialog_id = db.create_group_dialog(&req.title, user_id, &participants)?;
-    let info = build_dialog_info(dialog_id, user_id, db)?;
-    let obj = TlObject::DialogInfo(info);
-    let mut buf = Vec::new();
-    obj.write_boxed(&mut buf)?;
-    Ok(Some(buf))
+
+    let title = req.title.trim();
+    if title.is_empty() || title.chars().count() > MAX_GROUP_TITLE_CHARS {
+        return Err(anyhow!(
+            "Group title must be 1..={} characters",
+            MAX_GROUP_TITLE_CHARS
+        ));
+    }
+
+    // Дедупликация и запрет добавлять создателя второй раз.
+    let mut participants: Vec<i64> = Vec::new();
+    for participant in &req.participants {
+        let id = participant.0;
+        if id == user_id || participants.contains(&id) {
+            continue;
+        }
+        participants.push(id);
+    }
+    if participants.len() + 1 > MAX_GROUP_PARTICIPANTS {
+        return Err(anyhow!(
+            "Too many participants: max {}",
+            MAX_GROUP_PARTICIPANTS
+        ));
+    }
+    for id in &participants {
+        if !db.user_exists(*id)? {
+            return Err(anyhow!("Participant {} not found", id));
+        }
+    }
+
+    let dialog_id = db.create_group_dialog(title, user_id, &participants)?;
+    dialog_info_reply(dialog_id, user_id, db)
 }
 
 // ---------- AddGroupParticipant ----------
@@ -577,16 +684,32 @@ fn handle_add_group_participant(
     auth_key_id: Option<i64>,
 ) -> Result<Option<Vec<u8>>> {
     let user_id = get_user_id(auth_key_id, db)?;
-    let participants = db.get_dialog_participants(req.dialog_id.0)?;
-    if !participants.contains(&user_id) {
-        return Err(anyhow!("You are not a member of this group"));
+    let dialog_id = req.dialog_id.0;
+
+    // Раньше любой участник мог добавлять людей в группу; теперь — только админ.
+    let typ = db
+        .get_dialog_type(dialog_id)?
+        .ok_or_else(|| anyhow!("Dialog not found"))?;
+    if typ != 1 {
+        return Err(anyhow!("Not a group dialog"));
     }
-    db.add_participant(req.dialog_id.0, req.user_id.0)?;
-    let info = build_dialog_info(req.dialog_id.0, user_id, db)?;
-    let obj = TlObject::DialogInfo(info);
-    let mut buf = Vec::new();
-    obj.write_boxed(&mut buf)?;
-    Ok(Some(buf))
+    if !db.is_dialog_admin(dialog_id, user_id)? {
+        return Err(anyhow!("Only group admins can add participants"));
+    }
+    if !db.user_exists(req.user_id.0)? {
+        return Err(anyhow!("Target user not found"));
+    }
+    let participants = db.get_dialog_participants(dialog_id)?;
+    if participants.len() >= MAX_GROUP_PARTICIPANTS {
+        return Err(anyhow!(
+            "Group is full: max {} participants",
+            MAX_GROUP_PARTICIPANTS
+        ));
+    }
+    if !participants.contains(&req.user_id.0) {
+        db.add_participant(dialog_id, req.user_id.0)?;
+    }
+    dialog_info_reply(dialog_id, user_id, db)
 }
 
 // ---------- RemoveGroupParticipant ----------
@@ -596,19 +719,48 @@ fn handle_remove_group_participant(
     auth_key_id: Option<i64>,
 ) -> Result<Option<Vec<u8>>> {
     let user_id = get_user_id(auth_key_id, db)?;
-    let participants = db.get_dialog_participants(req.dialog_id.0)?;
-    if !participants.contains(&user_id) {
+    let dialog_id = req.dialog_id.0;
+
+    let meta = db
+        .get_dialog_meta(dialog_id, user_id)?
+        .ok_or_else(|| anyhow!("Dialog not found"))?;
+    if !meta.is_group {
+        return Err(anyhow!("Not a group dialog"));
+    }
+    if !meta.participants.contains(&user_id) {
         return Err(anyhow!("You are not a member of this group"));
     }
-    if user_id == req.user_id.0 {
-        return Err(anyhow!("Cannot remove yourself from group"));
+
+    if req.user_id.0 == user_id {
+        // Выход из группы разрешён любому участнику.
+        db.remove_participant(dialog_id, user_id)?;
+    } else {
+        if !db.is_dialog_admin(dialog_id, user_id)? {
+            return Err(anyhow!("Only group admins can remove participants"));
+        }
+        if !meta.participants.contains(&req.user_id.0) {
+            return Err(anyhow!("User is not a participant"));
+        }
+        db.remove_participant(dialog_id, req.user_id.0)?;
     }
-    db.remove_participant(req.dialog_id.0, req.user_id.0)?;
-    let info = build_dialog_info(req.dialog_id.0, user_id, db)?;
-    let obj = TlObject::DialogInfo(info);
-    let mut buf = Vec::new();
-    obj.write_boxed(&mut buf)?;
-    Ok(Some(buf))
+
+    // Если ушёл последний админ — повышаем первого оставшегося участника.
+    db.ensure_group_has_admin(dialog_id)?;
+    // Если участников не осталось, диалог и его сообщения больше не нужны.
+    // Ответить всё равно нужно: иначе клиент, ждущий DialogInfo, зависнет.
+    if db.get_dialog_participants(dialog_id)?.is_empty() {
+        let info = DialogInfo {
+            id: DialogId(dialog_id),
+            title: meta.title,
+            is_group: true,
+            participants: Vec::new(),
+            last_message: None,
+            unread_count: 0,
+        };
+        db.delete_empty_dialog(dialog_id)?;
+        return dialog_info_response(info);
+    }
+    dialog_info_reply(dialog_id, user_id, db)
 }
 
 // ---------- GetDialogs ----------
@@ -618,14 +770,29 @@ fn handle_get_dialogs(
     auth_key_id: Option<i64>,
 ) -> Result<Option<Vec<u8>>> {
     let user_id = get_user_id(auth_key_id, db)?;
-    let dialogs_raw = db.get_user_dialogs(user_id)?;
-    let mut dialog_infos = Vec::new();
-    for (id, _title, _typ, _other_phone) in dialogs_raw {
-        let info = build_dialog_info(id, user_id, db)?;
-        dialog_infos.push(info);
+    let chats = db.get_user_chats(user_id)?;
+    let mut dialog_infos = Vec::with_capacity(chats.len());
+    for chat in chats {
+        dialog_infos.push(build_dialog_info(chat.id, user_id, db)?);
     }
-    let list = DialogList { dialogs: dialog_infos };
+    let list = DialogList {
+        dialogs: dialog_infos,
+    };
     let obj = TlObject::DialogList(list);
+    let mut buf = Vec::new();
+    obj.write_boxed(&mut buf)?;
+    Ok(Some(buf))
+}
+
+/// Формирует ответ `DialogInfo` для запрошенного диалога.
+fn dialog_info_reply(dialog_id: i64, user_id: i64, db: &Database) -> Result<Option<Vec<u8>>> {
+    let info = build_dialog_info(dialog_id, user_id, db)?;
+    dialog_info_response(info)
+}
+
+/// Сериализует готовый `DialogInfo` в TL-ответ.
+fn dialog_info_response(info: DialogInfo) -> Result<Option<Vec<u8>>> {
+    let obj = TlObject::DialogInfo(info);
     let mut buf = Vec::new();
     obj.write_boxed(&mut buf)?;
     Ok(Some(buf))
@@ -633,35 +800,50 @@ fn handle_get_dialogs(
 
 // ---------- Вспомогательная функция для построения DialogInfo ----------
 fn build_dialog_info(dialog_id: i64, user_id: i64, db: &Database) -> Result<DialogInfo> {
-    let participants_vec = db.get_dialog_participants(dialog_id)?;
-    let participants: Vec<UserId> = participants_vec.into_iter().map(UserId).collect();
-    let is_group = participants.len() > 2;
-    let title = if is_group {
-        format!("Group {}", dialog_id)
-    } else {
-        let other = participants.iter().find(|&&u| u.0 != user_id).map(|u| u.0).unwrap_or(0);
-        let phone = if other != 0 {
-            let conn = db.get_conn()?;
-            let mut stmt = conn.prepare("SELECT phone FROM users WHERE id = ?1")?;
-            let mut rows = stmt.query(rusqlite::params![other])?;
-            if let Some(row) = rows.next()? {
-                row.get(0)?
-            } else {
-                "Unknown".to_string()
-            }
-        } else {
-            "Unknown".to_string()
-        };
-        phone
-    };
-    let last_message = None;
-    let unread_count = 0;
+    // Тип и название берём из таблицы dialogs, а не угадываем по числу
+    // участников: группа с одним участником остаётся группой, а сохранённое
+    // название больше не теряется.
+    let meta = db
+        .get_dialog_meta(dialog_id, user_id)?
+        .ok_or_else(|| anyhow!("Dialog {} not found", dialog_id))?;
+    let participants: Vec<UserId> = meta.participants.into_iter().map(UserId).collect();
     Ok(DialogInfo {
-        id: DialogId(dialog_id),
-        title,
-        is_group,
+        id: DialogId(meta.id),
+        title: meta.title,
+        is_group: meta.is_group,
         participants,
-        last_message,
-        unread_count,
+        last_message: None,
+        unread_count: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_limits_are_clamped() {
+        assert_eq!(clamp_history(0, 0), (1, 0));
+        assert_eq!(clamp_history(-1, -5), (1, 0));
+        assert_eq!(clamp_history(i32::MAX, 7), (200, 7));
+        assert_eq!(clamp_history(50, 10), (50, 10));
+    }
+
+    #[test]
+    fn phone_validation() {
+        assert!(is_valid_phone("+79990000000"));
+        assert!(is_valid_phone("12345"));
+        assert!(!is_valid_phone("1234"));
+        assert!(!is_valid_phone("+7999abc000"));
+        assert!(!is_valid_phone(""));
+        assert!(!is_valid_phone("+7 999 000 00 00"));
+    }
+
+    #[test]
+    fn password_validation() {
+        assert!(!is_valid_password("short"));
+        assert!(is_valid_password("12345678"));
+        assert!(is_valid_password(&"a".repeat(128)));
+        assert!(!is_valid_password(&"a".repeat(129)));
+    }
 }

@@ -2,7 +2,6 @@
 pub mod error;
 pub mod session;
 pub mod server_keys;
-pub mod dh_checks;
 
 pub use error::KostaError;
 pub use session::{ConnectOptions, Session};

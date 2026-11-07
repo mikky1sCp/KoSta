@@ -25,4 +25,7 @@ pub struct SessionData {
     pub send_seq_no: i32,
     pub msg_id_counter: u32,
     pub recent_msg_ids: RecentMsgIds,
+    /// Когда сессия последний раз использовалась (для вытеснения из кэша
+    /// тех же простаивающих сессий, которые вычищает БД).
+    pub last_used_at: std::time::Instant,
 }

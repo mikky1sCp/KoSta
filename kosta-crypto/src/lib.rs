@@ -2,6 +2,7 @@ pub mod error;
 pub mod keys;
 pub mod padding;
 pub mod dh;
+pub mod dh_checks;
 pub mod encrypted_inner;
 pub mod ctr;
 pub mod session_crypto;

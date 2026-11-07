@@ -314,8 +314,10 @@
         const messageInput = document.getElementById('message-input');
         const sendBtn = document.getElementById('send-btn');
 
-        const API_BASE = 'http://localhost:8081/api';
-        const WS_URL = 'ws://localhost:8081/ws';
+        // CORS на сервере больше нет, поэтому ходим только на свой origin —
+        // так UI работает и с localhost, и с 127.0.0.1, и за любым прокси.
+        const API_BASE = `${window.location.origin}/api`;
+        const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
         // ===== Переключение режима =====
         function setMode(mode) {
@@ -350,10 +352,17 @@
                 const res = await fetch(`${API_BASE}/login`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ phone, password })
+                    // register передаём явно: без него сервер не создаёт аккаунт
+                    // (иначе любой мог бы зарегистрировать чужой номер).
+                    body: JSON.stringify({ phone, password, register: !isLoginMode })
                 });
-                const data = await res.json();
-                if (data.success) {
+                let data = null;
+                try {
+                    data = await res.json();
+                } catch {
+                    data = null;
+                }
+                if (res.ok && data && data.success) {
                     userId = data.user_id;
                     authToken = data.token;
                     userPhone.textContent = phone;
@@ -363,7 +372,8 @@
                     connectWebSocket();
                     loadChats();
                 } else {
-                    loginError.textContent = data.error || 'Ошибка входа';
+                    // Показываем текст сервера (401/400), а не сырое исключение.
+                    loginError.textContent = (data && data.error) || 'Ошибка входа';
                 }
             } catch (err) {
                 loginError.textContent = 'Ошибка соединения с сервером';
@@ -394,6 +404,9 @@
         const MAX_RECONNECT = 10;
 
         function connectWebSocket() {
+            // После logout токена нет — переподключаться некуда,
+            // иначе получился бы цикл reconnect с auth_failed.
+            if (!authToken) return;
             if (ws && ws.readyState === WebSocket.OPEN) return;
             ws = new WebSocket(WS_URL);
             ws.onopen = () => {
@@ -433,6 +446,8 @@
                 }
             };
             ws.onclose = () => {
+                // Вышли из аккаунта (logout закрывает сокет) — reconnect не нужен.
+                if (!authToken) return;
                 console.log('WebSocket closed, reconnecting...');
                 if (reconnectAttempts < MAX_RECONNECT) {
                     setTimeout(() => {

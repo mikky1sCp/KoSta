@@ -57,6 +57,35 @@ pub async fn run_server(
     };
 
     let session_cache = Arc::new(SessionCache::new(1000, db.clone()));
+
+    // Очистка простаивающих сессий: и в БД, и в кэше. Только БД чистить
+    // недостаточно — кэш хранил копию и персистил её обратно при следующем
+    // обращении, «воскрешая» удалённую строку.
+    {
+        let cleanup_db = Arc::clone(&db);
+        let cleanup_cache = Arc::clone(&session_cache);
+        tokio::spawn(async move {
+            let anonymous_idle = Duration::from_secs(3600);
+            let user_idle = Duration::from_secs(30 * 24 * 3600);
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                match cleanup_db.purge_stale_sessions(
+                    anonymous_idle.as_secs() as i64,
+                    user_idle.as_secs() as i64,
+                ) {
+                    Ok(0) => {}
+                    Ok(n) => info!("Purged {} stale sessions", n),
+                    Err(e) => error!("Failed to purge stale sessions: {:#}", e),
+                }
+                let pruned = cleanup_cache.prune_idle(anonymous_idle, user_idle);
+                if pruned > 0 {
+                    info!("Pruned {} idle cached sessions", pruned);
+                }
+            }
+        });
+    }
+
     let active_connections = Arc::new(AtomicUsize::new(0));
     let idle_timeout = Duration::from_secs(config.idle_timeout_secs.max(1));
     let write_timeout = Duration::from_secs(30);
@@ -309,7 +338,7 @@ fn handle_client(
         }
 
         // Ошибка обработчика не должна обрывать соединение: логируем и живём дальше.
-        let response = match handlers::handle_request(transport, obj, &cache, &db, auth_key_id) {
+        let response = match handlers::handle_request(transport, obj, &cache, &db, auth_key_id, peer) {
             Ok(resp) => resp,
             Err(e) => {
                 error!("Handler error: {:#}", e);

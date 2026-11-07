@@ -271,13 +271,15 @@ impl<T: Transport> Session<T> {
         if &p_big * &q_big != pq_big {
             return Err(KostaError::Protocol("p*q != pq".into()));
         }
-        if !crate::dh_checks::is_prime(&p_big) || !crate::dh_checks::is_prime(&q_big) {
+        if !kosta_crypto::dh_checks::is_prime(&p_big) || !kosta_crypto::dh_checks::is_prime(&q_big) {
             return Err(KostaError::Protocol("p or q not prime".into()));
         }
         debug!("p and q verified");
 
         // --- проверка fingerprint ---
-        let server_public = get_server_public_key();
+        // Без публичного ключа сервера проверка невозможна: возвращаем
+        // понятную ошибку вместо паники/случайного ключа.
+        let server_public = get_server_public_key()?;
         let expected_fingerprint = compute_key_fingerprint(&server_public);
         if !res_pq.server_public_key_fingerprints.contains(&expected_fingerprint) {
             return Err(KostaError::Protocol("Server public key fingerprint mismatch".into()));
@@ -312,7 +314,9 @@ impl<T: Transport> Session<T> {
             server_nonce: server_nonce.clone(),
             p: res_pq.p,
             q: res_pq.q,
-            public_key_fingerprint: res_pq.server_public_key_fingerprints[0],
+            // Отправляем именно проверенный fingerprint, а не первый из списка:
+            // сервер может прислать несколько, и не факт, что [0] — наш.
+            public_key_fingerprint: expected_fingerprint,
             encrypted_data: encrypted_inner,
         };
         info!("Sending ReqDHParams");
@@ -329,7 +333,7 @@ impl<T: Transport> Session<T> {
         }
 
         // Проверка подписи
-        let server_public = get_server_public_key();
+        let server_public = get_server_public_key()?;
         let mut data_to_verify = Vec::new();
         dh_params.nonce.write_bytes(&mut data_to_verify)?;
         dh_params.server_nonce.write_bytes(&mut data_to_verify)?;
@@ -355,7 +359,7 @@ impl<T: Transport> Session<T> {
         // --- проверка DH параметров ---
         let dh_prime = BigUint::from_bytes_be(&inner_data.dh_prime);
         let g = BigUint::from(inner_data.g as u32);
-        if let Err(e) = crate::dh_checks::validate_dh_params(&dh_prime, &g) {
+        if let Err(e) = kosta_crypto::dh_checks::validate_dh_params(&dh_prime, &g) {
             return Err(KostaError::Protocol(e.into()));
         }
         if g <= BigUint::from(1u32) || g >= &dh_prime - BigUint::from(1u32) {
@@ -365,7 +369,10 @@ impl<T: Transport> Session<T> {
 
         // --- вычисление DH ---
         let g_a = BigUint::from_bytes_be(&inner_data.g_a);
-        let b = kosta_crypto::dh::generate_private_key() % &dh_prime;
+        // Приватный ключ DH в диапазоне [2, p-2]: `% p` мог дать 0, 1 или p-1
+        // и тривиальный общий секрет. Протокол и формат данных не меняются —
+        // g_b по-прежнему отправляется как есть.
+        let b = kosta_crypto::dh::generate_private_key_in_range(&dh_prime);
         let g_b = kosta_crypto::dh::compute_public_key(&g, &b, &dh_prime);
         let shared_secret = kosta_crypto::dh::compute_shared_secret(&g_a, &b, &dh_prime);
         debug!("Shared secret computed");

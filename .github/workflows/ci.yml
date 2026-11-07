@@ -55,7 +55,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
       - name: Build server and examples
-        run: cargo build --workspace --examples
+        run: cargo build --workspace --bins --examples
 
       - name: Start server
         run: |

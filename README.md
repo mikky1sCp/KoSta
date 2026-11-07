@@ -25,14 +25,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Run
 
 The server reads `config.toml` from the current directory: the binary protocol listens on
-`127.0.0.1:8080`, the web client is served on `http://127.0.0.1:8081`.
+`127.0.0.1:8080`, the web client is served on `http://127.0.0.1:8081` (both configurable).
 
 ```bash
 cargo run -p kosta-server
 ```
 
-Open <http://127.0.0.1:8081> and sign in with a phone number and a password; an unknown
-number registers a new user.
+Open <http://127.0.0.1:8081> and sign in with a phone number and a password; the
+"register" mode creates a new user, the "sign in" mode only accepts existing accounts.
 
 ## End-to-end checks
 
@@ -64,14 +64,25 @@ KOSTA_EXPECT_IDLE_TIMEOUT=1 node scripts/limits.mjs
 
 ## Authentication
 
-- **Web**: `POST /api/login` returns a session token (32 random bytes, hex). The database
-  stores only its SHA-256; the token lives for 7 days and can be revoked with
-  `POST /api/logout`. Send it as `Authorization: Bearer <token>`.
+- **Web**: `POST /api/login` with `{"phone", "password"}` for an existing account, or
+  `{"phone", "password", "register": true}` to also create a new account. Unknown phone
+  without `register` returns `401` (this prevents account enumeration). Phone format:
+  optional `+` and 5–20 digits; password: 8–128 characters.
+  The response contains a session token (32 random bytes, hex); the database stores only
+  its SHA-256. The token lives for 7 days and can be revoked with `POST /api/logout`
+  (which also closes that user's WebSocket connections).
 - **WebSocket**: the first message must be
-  `{"action":"auth","payload":{"token":"..."}}`.
+  `{"action":"auth","payload":{"token":"..."}}`. Tokens are re-validated every 30 seconds;
+  revoked tokens close the connection. A small per-IP rate limit applies to auth attempts
+  and message sending.
 - **Binary protocol**: MTProto-inspired DH handshake; afterwards messages are encrypted
-  with AES-256-CTR and authenticated with HMAC-SHA256, using per-direction keys derived
-  with HKDF.
+  with AES-256-CTR and authenticated with HMAC-SHA256 (encrypt-then-MAC), using per-direction
+  keys derived with HKDF. Client and server share a pinned Ed25519 server key; if
+  `server_public_key.der` is missing, the client fails with an explicit error instead of
+  silently generating a wrong key.
+- **Authorization**: every message/history/dialog operation checks that the caller is a
+  participant of the dialog. Group operations (add/remove) require group admin rights;
+  leaving a group is allowed to any member. The creator of a group becomes its admin.
 
 ## Server limits
 
@@ -81,9 +92,14 @@ Configured in `config.toml`:
 | --- | --- | --- |
 | `idle_timeout_secs` | 300 | connection is closed after this much silence |
 | `max_connections` | 256 | excess connections are dropped immediately |
+| `web.host` / `web.port` | 127.0.0.1 / 8081 | web API, WebSocket and static UI |
+| `web.ui_dir` | `web-ui` | directory with `index.html` (`KOSTA_WEB_UI_DIR` overrides) |
 
 Additionally, the server caps the handshake store at 10 000 pending handshakes with a 60 s
-TTL, and rate-limits handshakes to 30 per minute per IP.
+TTL, rate-limits handshakes to 30 per minute per IP, logins to 10 per minute per IP,
+registrations to 5 per hour per IP and WebSocket messages to 10 per second per user.
+Abandoned sessions (completed handshakes that never signed up) are purged after an hour,
+and sessions idle for more than 30 days are removed by an hourly cleanup task.
 
 ## TLS
 
@@ -98,11 +114,17 @@ Enable TLS on the server with `use_tls = true` and `cert_path` / `key_path` poin
 PEM certificate and a PKCS#8 private key. `KOSTA_HOST` and `KOSTA_PORT` override the
 client target address.
 
-## Session secrets at rest
+## Server key and session secrets at rest
 
-Session keys in SQLite are encrypted with AES-256-GCM. The master key is generated on the
-first start in `session_master.key` (32 bytes, mode `0600`); override the path with
-`KOSTA_MASTER_KEY_PATH`.
+- The server's Ed25519 signing key is generated on first start into `server_key.der`
+  (mode `0600` on unix; on Windows file ACLs must be restricted separately) and the
+  matching public key is written to `server_public_key.der`. On every start the public
+  file is re-derived from the private one, so a stale/missing public key heals itself.
+  Copy `server_public_key.der` to client hosts. Override paths with
+  `KOSTA_SERVER_KEY_PATH` / `KOSTA_SERVER_PUBKEY_PATH` (client reads the public path).
+- Session keys in SQLite are encrypted with AES-256-GCM. The master key is generated on the
+  first start in `session_master.key` (32 bytes, mode `0600`); override the path with
+  `KOSTA_MASTER_KEY_PATH`.
 
 - Keep the master key separate from the database (secret manager, not next to DB backups).
 - Losing the master key makes existing sessions unreadable; users simply have to sign in
@@ -122,14 +144,22 @@ cert_path = "cert.pem"
 key_path = "key.pem"
 idle_timeout_secs = 300
 max_connections = 256
+
+[web]
+host = "127.0.0.1"
+port = 8081
+ui_dir = "web-ui"
 ```
+
+The database schema is migrated on startup (new columns for media, group admins and
+session timestamps), foreign keys are enabled, and SQLite runs in WAL mode.
 
 ## Layout
 
 | Crate | Purpose |
 | --- | --- |
 | `kosta-core` | TL types and serialization |
-| `kosta-crypto` | DH, AES-CTR/HMAC, AES-GCM, HKDF, padding |
+| `kosta-crypto` | DH, AES-CTR/HMAC, AES-GCM, HKDF, padding, DH parameter checks |
 | `kosta-transport` | abridged / TCP / TLS / mock transports |
 | `kosta` | client session: handshake and encrypted messaging |
 | `kosta-server` | server: binary protocol, SQLite, web API and WebSocket |
@@ -138,6 +168,13 @@ max_connections = 256
 
 ## Known limitations
 
+- The protocol's handshake and its KDF are MTProto-*inspired* but not a reviewed
+  implementation of MTProto; treat the crypto as unaudited.
 - No TLS handshake tests in CI (they need certificates).
 - No Android/desktop clients; only the example client and the web UI.
 - No protocol versioning or backwards-compatibility guarantees.
+- The binary protocol has no error object: a handler error is logged and the connection
+  stays open, so a client waiting for a reply can only rely on its own timeout.
+- Groups have a minimal role model (admins can add/remove members); there is no
+  ban list, message editing/deletion in the protocol yet, and media upload is not exposed
+  by the web API.

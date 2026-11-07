@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
             .unwrap_or(256),
     };
 
-    server_keys::init_server_key();
+    server_keys::init_server_key()?;
 
     // Мастер-ключ для шифрования секретов сессий в БД. Хранится отдельно
     // от базы, чтобы утечка файла БД не давала готовых сессий.
@@ -51,13 +51,20 @@ async fn main() -> Result<()> {
     ))?);
 
     let db = Arc::new(db::Database::new(&server_config.db_path, secrets)?);
-    let cache = Arc::new(session_cache::SessionCache::new(1000, db.clone()));
 
-    // Запускаем веб-сервер с кэшем
+    // Веб-сервер слушает свой хост/порт из конфига, а не захардкоженный 8081.
+    let web_host = config
+        .get_string("web.host")
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let web_port = config.get_int("web.port").map(|v| v as u16).unwrap_or(8081);
+    // Путь к статике читается web-слоем из env (см. web/mod.rs).
+    if let Ok(ui_dir) = config.get_string("web.ui_dir") {
+        std::env::set_var("KOSTA_WEB_UI_DIR", ui_dir);
+    }
+
     let web_db = db.clone();
-    let web_cache = cache.clone();
     std::thread::spawn(move || {
-        if let Err(e) = web::run_web_server(web_db, web_cache, "127.0.0.1", 8081) {
+        if let Err(e) = web::run_web_server(web_db, &web_host, web_port) {
             eprintln!("Web server error: {}", e);
         }
     });

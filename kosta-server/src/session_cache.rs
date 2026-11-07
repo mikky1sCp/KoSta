@@ -3,6 +3,7 @@ use anyhow::Result;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use kosta_core::tl::types::{Int128, Int256};
 use kosta_crypto::session_crypto::SessionCrypto;
@@ -54,6 +55,7 @@ impl SessionCache {
             recent_msg_ids: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("cache size must be non-zero"),
             ))),
+            last_used_at: Instant::now(),
         }
     }
 
@@ -100,6 +102,7 @@ impl SessionCache {
 
         match f(&mut session) {
             Ok(value) => {
+                session.last_used_at = Instant::now();
                 self.persist(auth_key_id, &session)?;
                 cache.put(auth_key_id, session);
                 Ok(Some(value))
@@ -136,11 +139,39 @@ impl SessionCache {
         )
     }
 
-    pub fn update_session(&self, auth_key_id: i64, session: SessionData) -> Result<()> {
+    pub fn update_session(&self, auth_key_id: i64, mut session: SessionData) -> Result<()> {
+        session.last_used_at = Instant::now();
         self.persist(auth_key_id, &session)?;
         let mut cache = self.cache.lock().unwrap();
         cache.put(auth_key_id, session);
         Ok(())
+    }
+
+    /// Вытесняет из кэша сессии, простаивавшие дольше указанного времени.
+    ///
+    /// Без этого hourly-очистка БД не давала эффекта: удалённая из SQLite
+    /// строка «воскресала» при следующем `mutate_session`, потому что кэш
+    /// хранил копию и персистил её обратно. Брошенные рукопожатия (`user_id = 0`)
+    /// живут меньше, чем авторизованные сессии.
+    pub fn prune_idle(&self, anonymous_idle: Duration, user_idle: Duration) -> usize {
+        let now = Instant::now();
+        let mut cache = self.cache.lock().unwrap();
+        let idle_keys: Vec<i64> = cache
+            .iter()
+            .filter(|(_, session)| {
+                let idle = now.saturating_duration_since(session.last_used_at);
+                if session.user_id == 0 {
+                    idle >= anonymous_idle
+                } else {
+                    idle >= user_idle
+                }
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &idle_keys {
+            cache.pop(key);
+        }
+        idle_keys.len()
     }
 }
 
@@ -198,6 +229,7 @@ mod tests {
             recent_msg_ids: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(100).expect("non-zero"),
             ))),
+            last_used_at: Instant::now(),
         }
     }
 
@@ -260,5 +292,27 @@ mod tests {
         let in_cache = env.cache.get_session(AUTH_KEY_ID).unwrap().unwrap();
         assert_eq!(in_cache.msg_id_counter, 0, "откат должен вернуть счётчик");
         assert_eq!(in_cache.last_recv_msg_id, 0, "откат должен вернуть msg_id");
+    }
+
+    #[test]
+    fn prune_idle_removes_cached_sessions_without_resurrection() {
+        let env = test_env();
+        env.cache
+            .update_session(AUTH_KEY_ID, sample_session(env.user_id))
+            .unwrap();
+
+        // Свежая сессия суточную/часовую очистку переживает.
+        assert_eq!(
+            env.cache.prune_idle(Duration::from_secs(3600), Duration::from_secs(86_400)),
+            0
+        );
+
+        // С нулевыми порогами вытесняется всё, включая только что созданную.
+        assert_eq!(env.cache.prune_idle(Duration::ZERO, Duration::ZERO), 1);
+        assert_eq!(
+            env.cache.prune_idle(Duration::ZERO, Duration::ZERO),
+            0,
+            "кэш не должен содержать сессию после вытеснения"
+        );
     }
 }
