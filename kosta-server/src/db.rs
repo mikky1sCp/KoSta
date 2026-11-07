@@ -59,7 +59,53 @@ pub struct ChatRow {
     pub is_group: bool,
     pub last_message: Option<String>,
     pub last_timestamp: Option<i64>,
+    /// Непрочитанные входящие сообщения именно этого зрителя.
+    pub unread_count: i64,
+    /// Собеседник личного диалога; у группы всегда `None`.
+    pub other_user_id: Option<i64>,
+    /// Собеседник личного диалога сейчас онлайн (`user_status.status == 0`).
+    /// Отсутствие строки в `user_status` означает offline.
+    pub is_online: bool,
 }
+
+/// Участник диалога с телефоном и статусом — для `GET /api/chats/{id}`.
+#[derive(Debug, Clone)]
+pub struct ParticipantRow {
+    pub user_id: i64,
+    pub phone: String,
+    pub is_admin: bool,
+    pub is_online: bool,
+}
+
+/// Общий SELECT списка чатов. Плейсхолдер `?1` — зритель: все агрегаты
+/// (заголовок, последнее сообщение, непрочитанные, статус) считаются одним
+/// запросом, чтобы список не уходил в N+1 по истории каждого диалога.
+const CHAT_ROWS_SQL: &str = "
+    SELECT d.id, d.type, d.title,
+           (SELECT u.phone FROM dialog_participants dp2
+            JOIN users u ON u.id = dp2.user_id
+            WHERE dp2.dialog_id = d.id AND dp2.user_id != ?1
+            ORDER BY u.id LIMIT 1) AS other_phone,
+           (SELECT dp2.user_id FROM dialog_participants dp2
+            WHERE dp2.dialog_id = d.id AND dp2.user_id != ?1
+            ORDER BY dp2.user_id LIMIT 1) AS other_user_id,
+           (SELECT m.text FROM messages m
+            WHERE m.dialog_id = d.id AND m.deleted = 0
+            ORDER BY m.timestamp DESC, m.id DESC LIMIT 1) AS last_message,
+           (SELECT m.timestamp FROM messages m
+            WHERE m.dialog_id = d.id AND m.deleted = 0
+            ORDER BY m.timestamp DESC, m.id DESC LIMIT 1) AS last_ts,
+           (SELECT COUNT(*) FROM messages m
+            WHERE m.dialog_id = d.id AND m.read_status = 0
+              AND m.sender_id != ?1 AND m.deleted = 0) AS unread_count,
+           COALESCE((SELECT 1 FROM user_status us
+                     WHERE us.user_id = (SELECT dp2.user_id FROM dialog_participants dp2
+                                         WHERE dp2.dialog_id = d.id AND dp2.user_id != ?1
+                                         ORDER BY dp2.user_id LIMIT 1)
+                       AND us.status = 0), 0) AS other_online
+    FROM dialogs d
+    JOIN dialog_participants dp ON dp.dialog_id = d.id
+    WHERE dp.user_id = ?1";
 
 /// Метаданные диалога, нужные обработчикам TL и web-API.
 #[derive(Debug, Clone)]
@@ -338,6 +384,41 @@ impl Database {
         }
     }
 
+    /// Точный поиск пользователя по номеру: `(user_id, phone)`.
+    ///
+    /// Для `GET /api/users/lookup` и создания диалогов. Сравнение строгое
+    /// (`=`), а не `LIKE`: подстрочный поиск позволял бы перечислять номера.
+    pub fn find_user_by_phone(&self, phone: &str) -> Result<Option<(i64, String)>> {
+        let conn = self.get_conn()?;
+        let found = conn
+            .query_row(
+                "SELECT id, phone FROM users WHERE phone = ?1",
+                rusqlite::params![phone],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(found)
+    }
+
+    /// Телефон и онлайн-статус пользователя для `GET /api/me`.
+    ///
+    /// Статус берётся из `user_status`, а не из реестра WebSocket-соединений:
+    /// нет строки — значит offline.
+    pub fn get_user_profile(&self, user_id: i64) -> Result<Option<(String, bool)>> {
+        let conn = self.get_conn()?;
+        let profile = conn
+            .query_row(
+                "SELECT u.phone, COALESCE(us.status = 0, 0)
+                 FROM users u
+                 LEFT JOIN user_status us ON us.user_id = u.id
+                 WHERE u.id = ?1",
+                rusqlite::params![user_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+            )
+            .optional()?;
+        Ok(profile)
+    }
+
     // ----- Токены сессий (web-API и WebSocket) -----
 
     /// Время жизни токена.
@@ -602,51 +683,37 @@ impl Database {
     }
 
     /// Возвращает диалоги пользователя с заголовком (телефон собеседника
-    /// для личного диалога, название для группы) и последним сообщением.
+    /// для личного диалога, название для группы), последним сообщением,
+    /// числом непрочитанных и статусом собеседника.
     /// Заменяет старый `get_user_dialogs` + N+1 запросы истории в web-слое.
     pub fn get_user_chats(&self, user_id: i64) -> Result<Vec<ChatRow>> {
         let conn = self.get_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT d.id, d.type, d.title,
-                    (SELECT u.phone FROM dialog_participants dp2
-                     JOIN users u ON u.id = dp2.user_id
-                     WHERE dp2.dialog_id = d.id AND dp2.user_id != ?1
-                     ORDER BY u.id LIMIT 1) AS other_phone,
-                    (SELECT m.text FROM messages m
-                     WHERE m.dialog_id = d.id AND m.deleted = 0
-                     ORDER BY m.timestamp DESC, m.id DESC LIMIT 1) AS last_message,
-                    (SELECT m.timestamp FROM messages m
-                     WHERE m.dialog_id = d.id AND m.deleted = 0
-                     ORDER BY m.timestamp DESC, m.id DESC LIMIT 1) AS last_ts
-             FROM dialogs d
-             JOIN dialog_participants dp ON dp.dialog_id = d.id
-             WHERE dp.user_id = ?1
-             ORDER BY COALESCE(last_ts, d.created_at) DESC",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
-            let id: i64 = row.get(0)?;
-            let typ: i64 = row.get(1)?;
-            let raw_title: String = row.get(2)?;
-            let other_phone: Option<String> = row.get(3)?;
-            let last_message: Option<String> = row.get(4)?;
-            let last_timestamp: Option<i64> = row.get(5)?;
-            Ok((id, typ, raw_title, other_phone, last_message, last_timestamp))
-        })?;
-
+        let sql = format!(
+            "{} ORDER BY COALESCE(last_ts, d.created_at) DESC",
+            CHAT_ROWS_SQL
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![user_id], chat_row_from_row)?;
         let mut chats = Vec::new();
         for row in rows {
-            let (id, typ, raw_title, other_phone, last_message, last_timestamp) = row?;
-            let is_group = typ == 1;
-            let title = dialog_title(is_group, &raw_title, other_phone.as_deref(), id);
-            chats.push(ChatRow {
-                id,
-                title,
-                is_group,
-                last_message,
-                last_timestamp,
-            });
+            chats.push(row?);
         }
         Ok(chats)
+    }
+
+    /// Одна карточка чата глазами зрителя.
+    ///
+    /// `None` — диалога нет **или** зритель не участник. Различать эти случаи
+    /// (404 против 403) должен вызывающий слой: БД не знает, что показывать.
+    pub fn get_chat_row(&self, user_id: i64, dialog_id: i64) -> Result<Option<ChatRow>> {
+        let conn = self.get_conn()?;
+        let sql = format!("{} AND d.id = ?2 LIMIT 1", CHAT_ROWS_SQL);
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params![user_id, dialog_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(chat_row_from_row(row)?)),
+            None => Ok(None),
+        }
     }
 
     /// Метаданные диалога для TL-ответов: тип, заголовок, участники.
@@ -699,6 +766,37 @@ impl Database {
             users.push(user?);
         }
         Ok(users)
+    }
+
+    /// Участники диалога с телефоном, ролью и онлайн-статусом.
+    ///
+    /// `LEFT JOIN user_status`: пользователь без строки статуса считается
+    /// offline, но не должен выпадать из списка участников (как было бы
+    /// с INNER JOIN).
+    pub fn get_dialog_participants_detailed(&self, dialog_id: i64) -> Result<Vec<ParticipantRow>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT dp.user_id, u.phone, dp.is_admin,
+                    CASE WHEN us.status = 0 THEN 1 ELSE 0 END
+             FROM dialog_participants dp
+             JOIN users u ON u.id = dp.user_id
+             LEFT JOIN user_status us ON us.user_id = dp.user_id
+             WHERE dp.dialog_id = ?1
+             ORDER BY dp.joined_at, dp.user_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![dialog_id], |row| {
+            Ok(ParticipantRow {
+                user_id: row.get(0)?,
+                phone: row.get(1)?,
+                is_admin: row.get::<_, i64>(2)? != 0,
+                is_online: row.get::<_, i64>(3)? != 0,
+            })
+        })?;
+        let mut participants = Vec::new();
+        for row in rows {
+            participants.push(row?);
+        }
+        Ok(participants)
     }
 
     pub fn add_participant(&self, dialog_id: i64, user_id: i64) -> Result<()> {
@@ -785,6 +883,20 @@ impl Database {
             )
             .optional()?;
         Ok(typ)
+    }
+
+    /// Переименование группы. Права проверяет вызывающий слой: БД не знает,
+    /// кто именно делает запрос и является ли он администратором.
+    pub fn rename_dialog(&self, dialog_id: i64, title: &str) -> Result<()> {
+        let conn = self.get_conn()?;
+        let updated = conn.execute(
+            "UPDATE dialogs SET title = ?1 WHERE id = ?2",
+            rusqlite::params![title, dialog_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("диалог {} не найден", dialog_id));
+        }
+        Ok(())
     }
 
     /// Является ли пользователь администратором диалога.
@@ -899,6 +1011,22 @@ impl Database {
         Ok(())
     }
 
+    /// Помечает прочитанными все входящие сообщения диалога для `viewer_id`
+    /// и возвращает число изменённых строк.
+    ///
+    /// Исходящие (`sender_id == viewer_id`) и удалённые не трогаем: иначе
+    /// счётчик непрочитанных у собеседника поехал бы от чужого действия.
+    pub fn mark_dialog_read(&self, dialog_id: i64, viewer_id: i64) -> Result<usize> {
+        let conn = self.get_conn()?;
+        let marked = conn.execute(
+            "UPDATE messages SET read_status = 1
+             WHERE dialog_id = ?1 AND sender_id != ?2
+               AND read_status = 0 AND deleted = 0",
+            rusqlite::params![dialog_id, viewer_id],
+        )?;
+        Ok(marked)
+    }
+
     pub fn mark_message_delivered(&self, message_id: i64) -> Result<()> {
         let conn = self.get_conn()?;
         conn.execute(
@@ -978,6 +1106,40 @@ fn dialog_title(is_group: bool, raw_title: &str, other_phone: Option<&str>, dial
             .map(|p| p.to_string())
             .unwrap_or_else(|| format!("Диалог {}", dialog_id))
     }
+}
+
+/// Собирает `ChatRow` из строки `CHAT_ROWS_SQL`.
+///
+/// У группы «собеседника» нет, даже если подзапрос вернул случайного
+/// участника: иначе фронтенд показал бы статус произвольного человека.
+fn chat_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
+    let id: i64 = row.get(0)?;
+    let typ: i64 = row.get(1)?;
+    let raw_title: String = row.get(2)?;
+    let other_phone: Option<String> = row.get(3)?;
+    let other_user_id: Option<i64> = row.get(4)?;
+    let last_message: Option<String> = row.get(5)?;
+    let last_timestamp: Option<i64> = row.get(6)?;
+    let unread_count: i64 = row.get(7)?;
+    let other_online: i64 = row.get(8)?;
+
+    let is_group = typ == 1;
+    let (other_user_id, is_online) = if is_group {
+        (None, false)
+    } else {
+        (other_user_id, other_online != 0)
+    };
+
+    Ok(ChatRow {
+        id,
+        title: dialog_title(is_group, &raw_title, other_phone.as_deref(), id),
+        is_group,
+        last_message,
+        last_timestamp,
+        unread_count,
+        other_user_id,
+        is_online,
+    })
 }
 
 /// Собирает `FullSession` из строки `sessions` с понятными ошибками
@@ -1409,5 +1571,200 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
+    }
+
+    #[test]
+    fn unread_count_counts_only_incoming_undeleted_unread() {
+        let t = TempDb::new();
+        let u1 = t.db.create_user("+2100", "pass").unwrap();
+        let u2 = t.db.create_user("+2101", "pass").unwrap();
+        let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+
+        // Три входящих, одно своё и одно входящее «удалённое».
+        let already_read = t
+            .db
+            .save_message(dialog_id, u2, "прочитано", 100, false, None, None)
+            .unwrap();
+        t.db
+            .save_message(dialog_id, u2, "новое 1", 101, false, None, None)
+            .unwrap();
+        t.db
+            .save_message(dialog_id, u2, "новое 2", 102, false, None, None)
+            .unwrap();
+        t.db
+            .save_message(dialog_id, u1, "моё", 103, true, None, None)
+            .unwrap();
+        let deleted = t
+            .db
+            .save_message(dialog_id, u2, "удалено", 104, false, None, None)
+            .unwrap();
+
+        // Прочитанность и удаление — руками: публичных методов для них нет.
+        let conn = t.db.get_conn().unwrap();
+        conn.execute(
+            "UPDATE messages SET read_status = 1 WHERE id = ?1",
+            rusqlite::params![already_read],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE messages SET deleted = 1 WHERE id = ?1",
+            rusqlite::params![deleted],
+        )
+        .unwrap();
+        drop(conn);
+
+        let row = t.db.get_chat_row(u1, dialog_id).unwrap().unwrap();
+        assert_eq!(row.unread_count, 2, "только два входящих непрочитанных");
+        assert_eq!(row.other_user_id, Some(u2));
+        assert_eq!(row.title, "+2101");
+        assert!(!row.is_online, "без строки user_status собеседник offline");
+
+        t.db.set_user_status(u2, 0).unwrap();
+        assert!(
+            t.db.get_chat_row(u1, dialog_id).unwrap().unwrap().is_online,
+            "status 0 — онлайн"
+        );
+        t.db.set_user_status(u2, 1).unwrap();
+        assert!(
+            !t.db.get_chat_row(u1, dialog_id).unwrap().unwrap().is_online,
+            "status 1 — офлайн"
+        );
+
+        // Для второго участника собеседник — первый.
+        let peer = t.db.get_chat_row(u2, dialog_id).unwrap().unwrap();
+        assert_eq!(peer.other_user_id, Some(u1));
+        assert_eq!(peer.unread_count, 1, "непрочитанное входящее от u1");
+
+        // У группы нет «собеседника» и статуса.
+        let group_id = t.db.create_group_dialog("Группа", u1, &[u2]).unwrap();
+        let group = t.db.get_chat_row(u1, group_id).unwrap().unwrap();
+        assert!(group.is_group);
+        assert_eq!(group.other_user_id, None);
+        assert!(!group.is_online);
+        assert_eq!(group.unread_count, 0);
+
+        // Постороннему карточка не положена.
+        let stranger = t.db.create_user("+2102", "pass").unwrap();
+        assert!(t.db.get_chat_row(stranger, dialog_id).unwrap().is_none());
+        assert!(t.db.get_chat_row(stranger, group_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn mark_dialog_read_marks_only_incoming_and_is_idempotent() {
+        let t = TempDb::new();
+        let u1 = t.db.create_user("+2103", "pass").unwrap();
+        let u2 = t.db.create_user("+2104", "pass").unwrap();
+        let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+
+        t.db
+            .save_message(dialog_id, u2, "входящее 1", 100, false, None, None)
+            .unwrap();
+        t.db
+            .save_message(dialog_id, u2, "входящее 2", 101, false, None, None)
+            .unwrap();
+        t.db
+            .save_message(dialog_id, u1, "исходящее", 102, true, None, None)
+            .unwrap();
+
+        // Для u1 входящих непрочитанных два, исходящее не трогаем.
+        assert_eq!(t.db.mark_dialog_read(dialog_id, u1).unwrap(), 2);
+        assert_eq!(
+            t.db.mark_dialog_read(dialog_id, u1).unwrap(),
+            0,
+            "повторный вызов нечего помечать"
+        );
+        assert_eq!(
+            t.db.get_chat_row(u1, dialog_id).unwrap().unwrap().unread_count,
+            0
+        );
+
+        // Для u2 входящее — одно (сообщение u1), остальное его собственное.
+        assert_eq!(t.db.mark_dialog_read(dialog_id, u2).unwrap(), 1);
+        assert_eq!(t.db.mark_dialog_read(dialog_id, u2).unwrap(), 0);
+    }
+
+    #[test]
+    fn detailed_participants_include_phone_role_and_online() {
+        let t = TempDb::new();
+        let creator = t.db.create_user("+2105", "pass").unwrap();
+        let member = t.db.create_user("+2106", "pass").unwrap();
+        let offline = t.db.create_user("+2107", "pass").unwrap();
+        let group_id = t
+            .db
+            .create_group_dialog("Команда", creator, &[member, offline])
+            .unwrap();
+        t.db.set_user_status(creator, 1).unwrap();
+        t.db.set_user_status(member, 0).unwrap();
+
+        let participants = t.db.get_dialog_participants_detailed(group_id).unwrap();
+        assert_eq!(participants.len(), 3);
+        let by_id = |id: i64| {
+            participants
+                .iter()
+                .find(|p| p.user_id == id)
+                .expect("участник должен быть в списке")
+        };
+        assert!(by_id(creator).is_admin, "создатель — администратор");
+        assert_eq!(by_id(creator).phone, "+2105");
+        assert!(!by_id(creator).is_online, "status 1 — офлайн");
+        assert!(!by_id(member).is_admin);
+        assert!(by_id(member).is_online, "status 0 — онлайн");
+        assert!(
+            !by_id(offline).is_online,
+            "отсутствие строки user_status — offline"
+        );
+
+        // Личный диалог тоже отдаёт участников (для карточки чата).
+        let private_id = t.db.create_private_dialog(member, offline).unwrap();
+        let private = t.db.get_dialog_participants_detailed(private_id).unwrap();
+        assert_eq!(private.len(), 2);
+        assert!(private.iter().all(|p| !p.is_admin));
+    }
+
+    #[test]
+    fn rename_dialog_updates_title_and_reports_missing_dialog() {
+        let t = TempDb::new();
+        let creator = t.db.create_user("+2109", "pass").unwrap();
+        let group_id = t.db.create_group_dialog("Старое", creator, &[]).unwrap();
+
+        t.db.rename_dialog(group_id, "Новое").unwrap();
+        let meta = t.db.get_dialog_meta(group_id, creator).unwrap().unwrap();
+        assert_eq!(meta.title, "Новое");
+        assert!(t.db.rename_dialog(999_999, "x").is_err());
+    }
+
+    #[test]
+    fn lookup_by_phone_is_exact_and_profile_reports_online() {
+        let t = TempDb::new();
+        let user_id = t.db.create_user("+2110", "pass").unwrap();
+
+        assert_eq!(
+            t.db.find_user_by_phone("+2110").unwrap(),
+            Some((user_id, "+2110".to_string()))
+        );
+        assert_eq!(t.db.find_user_by_phone("+2111").unwrap(), None);
+        assert_eq!(
+            t.db.find_user_by_phone("2110").unwrap(),
+            None,
+            "номер сверяется точно, без подстрок"
+        );
+
+        assert_eq!(
+            t.db.get_user_profile(user_id).unwrap(),
+            Some(("+2110".to_string(), false)),
+            "нет строки user_status — offline"
+        );
+        t.db.set_user_status(user_id, 0).unwrap();
+        assert_eq!(
+            t.db.get_user_profile(user_id).unwrap(),
+            Some(("+2110".to_string(), true))
+        );
+        t.db.set_user_status(user_id, 3).unwrap();
+        assert_eq!(
+            t.db.get_user_profile(user_id).unwrap(),
+            Some(("+2110".to_string(), false)),
+            "любой статус кроме 0 — offline"
+        );
+        assert!(t.db.get_user_profile(999_999).unwrap().is_none());
     }
 }

@@ -11,7 +11,7 @@ use crate::web::state::WebState;
 use crate::metrics::{WS_CONNECTIONS, MESSAGES_SENT, AUTH_SUCCESS};
 // Импорт rate limiter
 use crate::rate_limiter::{
-    check_limit, WS_AUTH_LIMITER, WS_FRAME_LIMITER, WS_MESSAGE_LIMITER,
+    check_limit, WS_AUTH_LIMITER, WS_FRAME_LIMITER, WS_MESSAGE_LIMITER, WS_TYPING_LIMITER,
 };
 
 /// Максимальная длина текста сообщения в символах (не байтах):
@@ -350,24 +350,30 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                             Ok(msg_id) => {
                                 MESSAGES_SENT.inc();
 
-                                let msg_data = serde_json::json!({
-                                    "type": "new_message",
-                                    "payload": {
-                                        "id": msg_id,
-                                        "dialog_id": dialog_id,
-                                        "sender_id": user_id,
-                                        "text": text,
-                                        "timestamp": now,
-                                        "is_outgoing": true,
-                                        "read": false,
-                                        "delivered": false,
-                                    }
-                                });
-                                let msg_str = msg_data.to_string();
+                                // Один и тот же объект уходит отправителю и остальным,
+                                // но `is_outgoing` зависит от зрителя: у отправителя
+                                // это его сообщение, у остальных — входящее.
+                                let message_payload = |outgoing: bool| {
+                                    serde_json::json!({
+                                        "type": "new_message",
+                                        "payload": {
+                                            "id": msg_id,
+                                            "dialog_id": dialog_id,
+                                            "sender_id": user_id,
+                                            "text": text,
+                                            "timestamp": now,
+                                            "is_outgoing": outgoing,
+                                            "read": false,
+                                            "delivered": false,
+                                        }
+                                    })
+                                };
+                                let own_str = message_payload(true).to_string();
+                                let others_str = message_payload(false).to_string();
 
-                                ctx.text(msg_str.clone());
+                                ctx.text(own_str);
                                 let self_addr = ctx.address();
-                                self.state.broadcast_to_dialog(dialog_id, &msg_str, Some(&self_addr));
+                                self.state.broadcast_to_dialog(dialog_id, &others_str, Some(&self_addr));
 
                                 info!("Message {} broadcasted to dialog {}", msg_id, dialog_id);
                             }
@@ -378,7 +384,57 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                         }
                     }
 
-                    // ---------- Остальные действия (typing, read) ----------
+                    // ---------- Индикатор набора ----------
+                    Some("typing") => {
+                        let Some(user_id) = self.require_auth(ctx) else {
+                            return;
+                        };
+                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64) else {
+                            send_error(ctx, "Missing dialog_id");
+                            return;
+                        };
+                        let Some(typing) = payload.get("typing").and_then(Value::as_bool) else {
+                            send_error(ctx, "Missing typing");
+                            return;
+                        };
+
+                        // Отдельный лимит: typing дешёвый, но рассылается всем
+                        // подписчикам, поэтому поток с одного аккаунта ограничен.
+                        if let Err(e) = check_limit(&WS_TYPING_LIMITER, user_id) {
+                            send_error(ctx, e);
+                            return;
+                        }
+
+                        // Рассылать индикатор можно только в свой диалог.
+                        match self.db.get_dialog_participants(dialog_id) {
+                            Ok(participants) if participants.contains(&user_id) => {}
+                            Ok(_) => {
+                                send_error(ctx, "You are not a participant of this dialog");
+                                return;
+                            }
+                            Err(e) => {
+                                error!("Failed to load dialog {} participants: {}", dialog_id, e);
+                                send_error(ctx, "Dialog not found");
+                                return;
+                            }
+                        }
+
+                        let event = serde_json::json!({
+                            "type": "typing",
+                            "payload": {
+                                "dialog_id": dialog_id,
+                                "user_id": user_id,
+                                "typing": typing,
+                            }
+                        })
+                        .to_string();
+                        // Себе не эхо: клиент и так знает, что пользователь печатает.
+                        let self_addr = ctx.address();
+                        self.state
+                            .broadcast_to_dialog(dialog_id, &event, Some(&self_addr));
+                    }
+
+                    // ---------- Остальные действия (read) ----------
                     _ => {
                         warn!("Unknown WebSocket action: {:?}", action);
                     }

@@ -50,6 +50,10 @@ impl<K: Eq + std::hash::Hash + Clone> RateLimiter<K> {
 lazy_static! {
     pub static ref WS_MESSAGE_LIMITER: RateLimiter<i64> =
         RateLimiter::new(Duration::from_secs(1), 10);   // 10 сообщений в секунду на пользователя
+    /// Индикатор набора: клиент шлёт его не чаще ~2 с, но сервер ограничивает
+    /// поток отдельно, иначе «печатает…» стал бы каналом спама для подписчиков.
+    pub static ref WS_TYPING_LIMITER: RateLimiter<i64> =
+        RateLimiter::new(Duration::from_secs(1), 10);   // 10 typing-событий в секунду на пользователя
     /// Попытки авторизации в WebSocket (токен может быть перебираемым/устаревшим).
     pub static ref WS_AUTH_LIMITER: RateLimiter<String> =
         RateLimiter::new(Duration::from_secs(60), 10);  // 10 попыток auth в минуту с IP

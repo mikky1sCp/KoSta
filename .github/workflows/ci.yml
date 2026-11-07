@@ -35,6 +35,30 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+  web-ui:
+    name: Web UI build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
   e2e:
     name: Protocol and web smoke
     runs-on: ubuntu-latest
@@ -49,13 +73,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
 
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
       - name: Build server and examples
         run: cargo build --workspace --bins --examples
+
+      - name: Build web UI
+        working-directory: web-ui
+        run: |
+          npm ci
+          npm run build
 
       - name: Start server
         run: |
@@ -76,6 +108,9 @@ jobs:
 
       - name: Web API and WebSocket smoke
         run: node scripts/smoke.mjs --phone=+79990000001
+
+      - name: UI is served
+        run: curl -sf http://127.0.0.1:8081/ | grep -q "KoSta"
 
       - name: TL parser garbage resistance
         run: node scripts/tl-garbage.mjs

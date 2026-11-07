@@ -5,3 +5,9 @@
 /server_public_key.der
 /session_master.key
 *.pem
+
+# Web UI (Vite): зависимости, кэш npm и собранная статика
+node_modules/
+.npm-cache/
+web-ui/dist/
+web-ui/.vite/

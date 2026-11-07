@@ -11,7 +11,8 @@ client.
 ## Requirements
 
 - Rust with edition 2021 support (tested with 1.99)
-- Node.js 22+ for the smoke scripts (native `fetch` and `WebSocket`)
+- Node.js 24+ for building the web UI and for the smoke scripts (native `fetch` and
+  `WebSocket`; Vite loads its TypeScript config via Node's native type stripping)
 - Linux only: `libssl-dev` and `pkg-config` for `native-tls`
 
 ## Build and test
@@ -26,13 +27,41 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The server reads `config.toml` from the current directory: the binary protocol listens on
 `127.0.0.1:8080`, the web client is served on `http://127.0.0.1:8081` (both configurable).
+The web client is a Vite/React app, so it has to be built before the server can serve it:
 
 ```bash
+cd web-ui
+npm ci
+npm run build
+cd ..
 cargo run -p kosta-server
 ```
 
 Open <http://127.0.0.1:8081> and sign in with a phone number and a password; the
 "register" mode creates a new user, the "sign in" mode only accepts existing accounts.
+`web.ui_dir` in `config.toml` points at the built `web-ui/dist` directory
+(override with `KOSTA_WEB_UI_DIR` if the build lives elsewhere).
+
+## Web UI development
+
+Run the API server and the Vite dev server in two terminals:
+
+```bash
+cargo run -p kosta-server
+
+cd web-ui
+npm install
+npm run dev   # http://127.0.0.1:5173, proxies /api and /ws to :8081
+```
+
+The UI lives in `web-ui/src` (React + TypeScript + Tailwind v4). `npm run build`
+produces `web-ui/dist`, which is what the Rust server serves. The API/WebSocket contract
+is described in [docs/web-api.md](docs/web-api.md).
+
+UI features: login/registration, chat list with search and unread badges, private chats
+and groups, group administration (admin-only add/remove, rename, leave), online status,
+typing indicators, read receipts, message history pagination, light/dark theme and a
+responsive mobile layout.
 
 ## End-to-end checks
 
@@ -164,7 +193,8 @@ session timestamps), foreign keys are enabled, and SQLite runs in WAL mode.
 | `kosta` | client session: handshake and encrypted messaging |
 | `kosta-server` | server: binary protocol, SQLite, web API and WebSocket |
 
-`web-ui/` holds the single-file browser client; `scripts/` holds the Node.js smoke tests.
+`web-ui/` holds the React (Vite + TypeScript) browser client; `docs/` holds the web
+API/WebSocket contract; `scripts/` holds the Node.js smoke tests.
 
 ## Known limitations
 
@@ -175,6 +205,10 @@ session timestamps), foreign keys are enabled, and SQLite runs in WAL mode.
 - No protocol versioning or backwards-compatibility guarantees.
 - The binary protocol has no error object: a handler error is logged and the connection
   stays open, so a client waiting for a reply can only rely on its own timeout.
+- The web UI requires a build step (`npm run build`); the Rust server serves `web-ui/dist`
+  and needs Node.js 24+ for the Vite build.
+- An authenticated user can check whether an exact phone number is registered
+  (`/api/users/lookup`, rate-limited); there is no contact discovery beyond that.
 - Groups have a minimal role model (admins can add/remove members); there is no
   ban list, message editing/deletion in the protocol yet, and media upload is not exposed
   by the web API.

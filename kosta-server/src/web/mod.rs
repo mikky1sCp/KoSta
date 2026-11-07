@@ -21,7 +21,7 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
     let host = host.to_string();
     // Статику выносим в env: развёртыванию не нужно пересобирать бинарь
     // ради другого каталога с web-ui.
-    let ui_dir = std::env::var("KOSTA_WEB_UI_DIR").unwrap_or_else(|_| "./web-ui".to_string());
+    let ui_dir = std::env::var("KOSTA_WEB_UI_DIR").unwrap_or_else(|_| "./web-ui/dist".to_string());
 
     actix_rt::System::new().block_on(async move {
         HttpServer::new(move || {
@@ -42,8 +42,38 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                     web::scope("/api")
                         .route("/login", web::post().to(handlers::login))
                         .route("/logout", web::post().to(handlers::logout))
+                        .route("/me", web::get().to(handlers::get_me))
                         .route("/chats", web::get().to(handlers::get_chats))
+                        // Статические сегменты регистрируем до "/chats/{id}":
+                        // actix выбирает ресурс по порядку регистрации, иначе
+                        // "private"/"group" попали бы в динамический сегмент.
+                        .service(
+                            web::resource("/chats/private")
+                                .route(web::post().to(handlers::create_private_chat)),
+                        )
+                        .service(
+                            web::resource("/chats/group")
+                                .route(web::post().to(handlers::create_group_chat)),
+                        )
+                        .service(
+                            web::resource("/chats/{id}")
+                                .route(web::get().to(handlers::get_chat))
+                                .route(web::patch().to(handlers::rename_chat)),
+                        )
+                        .service(
+                            web::resource("/chats/{id}/participants")
+                                .route(web::post().to(handlers::add_participant)),
+                        )
+                        .service(
+                            web::resource("/chats/{id}/participants/{user_id}")
+                                .route(web::delete().to(handlers::remove_participant)),
+                        )
+                        .service(
+                            web::resource("/chats/{id}/read")
+                                .route(web::post().to(handlers::mark_chat_read)),
+                        )
                         .route("/history", web::get().to(handlers::get_history))
+                        .route("/users/lookup", web::get().to(handlers::lookup_user))
                 )
                 // --- Health & Metrics ---
                 .route("/health", web::get().to(|| async {

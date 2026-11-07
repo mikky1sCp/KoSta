@@ -1,0 +1,27 @@
+{
+  "name": "kosta-web-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "KoSta web messenger (Vite + React + TypeScript)",
+  "scripts": {
+    "dev": "vite --configLoader native",
+    "build": "tsc --noEmit && vite build --configLoader native",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --configLoader native"
+  },
+  "dependencies": {
+    "lucide-react": "^1.70.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}
