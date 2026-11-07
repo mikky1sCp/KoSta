@@ -289,6 +289,7 @@
     <script>
         // ===== State =====
         let userId = null;
+        let authToken = null;
         let ws = null;
         let currentChatId = 1;
         let isSubscribed = false;
@@ -354,13 +355,13 @@
                 const data = await res.json();
                 if (data.success) {
                     userId = data.user_id;
+                    authToken = data.token;
                     userPhone.textContent = phone;
                     userInfo.classList.remove('hidden');
                     loginContainer.style.display = 'none';
                     app.style.display = 'flex';
                     connectWebSocket();
                     loadChats();
-                    loadHistory(currentChatId);
                 } else {
                     loginError.textContent = data.error || 'Ошибка входа';
                 }
@@ -372,6 +373,10 @@
         // ===== Logout =====
         logoutBtn.addEventListener('click', () => {
             if (ws) ws.close();
+            if (authToken) {
+                fetch(`${API_BASE}/logout`, { method: 'POST', headers: authHeaders() }).catch(() => {});
+            }
+            authToken = null;
             userId = null;
             userInfo.classList.add('hidden');
             app.style.display = 'none';
@@ -396,7 +401,7 @@
                 reconnectAttempts = 0;
                 ws.send(JSON.stringify({
                     action: 'auth',
-                    payload: { user_id: userId }
+                    payload: { token: authToken }
                 }));
             };
             ws.onmessage = (event) => {
@@ -445,14 +450,16 @@
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
             ws.send(JSON.stringify({
                 action: 'subscribe',
-                payload: { chat_id: chatId }
+                payload: { dialog_id: chatId }
             }));
         }
 
         // ===== Загрузка чатов =====
+        const authHeaders = () => ({ 'Authorization': `Bearer ${authToken}` });
+
         async function loadChats() {
             try {
-                const res = await fetch(`${API_BASE}/chats`);
+                const res = await fetch(`${API_BASE}/chats`, { headers: authHeaders() });
                 const chats = await res.json();
                 chatList.innerHTML = chats.map(chat => `
                     <div class="chat-item p-3 rounded-xl cursor-pointer hover:bg-slate-700/50 transition ${chat.id === currentChatId ? 'active' : ''}" data-id="${chat.id}">
@@ -461,8 +468,8 @@
                                 <i class="fas fa-user text-white"></i>
                             </div>
                             <div class="flex-1 min-w-0">
-                                <div class="font-medium text-white truncate">${chat.title}</div>
-                                <div class="text-sm text-slate-400 truncate">${chat.last_message || 'Нет сообщений'}</div>
+                                <div class="font-medium text-white truncate">${escapeHtml(chat.title)}</div>
+                                <div class="text-sm text-slate-400 truncate">${escapeHtml(chat.last_message || 'Нет сообщений')}</div>
                             </div>
                         </div>
                     </div>
@@ -478,6 +485,13 @@
                         subscribeToChat(id);
                     });
                 });
+
+                // Если текущего чата нет в списке — открываем первый доступный
+                if (chats.length > 0 && !chats.some(c => c.id === currentChatId)) {
+                    currentChatId = chats[0].id;
+                    loadHistory(currentChatId);
+                    subscribeToChat(currentChatId);
+                }
             } catch (e) {
                 console.error('Load chats error:', e);
             }
@@ -486,7 +500,7 @@
         // ===== История =====
         async function loadHistory(chatId) {
             try {
-                const res = await fetch(`${API_BASE}/history?chat_id=${chatId}&limit=50`);
+                const res = await fetch(`${API_BASE}/history?chat_id=${chatId}&limit=50`, { headers: authHeaders() });
                 const messages = await res.json();
                 messagesContainer.innerHTML = '';
                 messages.forEach(msg => appendMessage(msg, msg.is_outgoing));
@@ -523,7 +537,7 @@
             ws.send(JSON.stringify({
                 action: 'send_message',
                 payload: {
-                    chat_id: currentChatId,
+                    dialog_id: currentChatId,
                     text: text
                 }
             }));

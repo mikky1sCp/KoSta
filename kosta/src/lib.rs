@@ -4,8 +4,8 @@ pub mod session;
 pub mod server_keys;
 pub mod dh_checks;
 
-pub use session::Session;
 pub use error::KostaError;
+pub use session::{ConnectOptions, Session};
 
 #[cfg(test)]
 mod tests {
@@ -56,5 +56,16 @@ mod tests {
             }
             _ => panic!("Expected ReqPq"),
         }
+    }
+
+    #[test]
+    fn tls_is_verified_by_default() {
+        // Регресс-защита: проверка сертификата не должна отключаться по умолчанию.
+        let opts = ConnectOptions::default();
+        assert!(
+            !opts.allow_invalid_certs,
+            "проверка TLS-сертификата обязана быть включена по умолчанию"
+        );
+        assert!(!opts.use_tls, "TLS не включается без явного запроса");
     }
 }

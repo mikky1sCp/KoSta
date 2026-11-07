@@ -117,18 +117,43 @@ impl TlRead for Vec<u8> {
 }
 
 // Вспомогательные функции для TL-строк
+
+/// Максимальная длина одного TL-поля (строка/bytes).
+/// Транспорт ограничивает фрейм 1 МиБ; запас нужен для расшифрованных
+/// внутренних данных, которые могут быть чуть больше.
+pub const MAX_TL_BYTES: usize = 4 * 1024 * 1024;
+
+/// Максимальное число элементов в TL-векторе.
+pub const MAX_TL_VECTOR_ITEMS: usize = 100_000;
+
+/// Максимальная длина, которую можно записать в 3-байтовый TL-заголовок.
+const MAX_TL_BYTES_ON_WIRE: usize = 0xFF_FFFF;
+
+/// Выравнивание TL-поля: и заголовок длины, и данные вместе
+/// должны давать длину, кратную 4.
+fn tl_padding(len: usize, header_len: usize) -> usize {
+    (4 - (len + header_len) % 4) % 4
+}
+
 fn write_tl_bytes<W: Write>(data: &[u8], writer: &mut W) -> Result<(), Error> {
     let len = data.len();
+    let header_len = if len <= 253 { 1 } else { 4 };
     if len <= 253 {
         writer.write_all(&[len as u8])?;
     } else {
+        if len > MAX_TL_BYTES_ON_WIRE {
+            return Err(Error::Custom(format!(
+                "TL bytes too long to serialize: {} (max {})",
+                len, MAX_TL_BYTES_ON_WIRE
+            )));
+        }
         writer.write_all(&[254u8])?;
         writer.write_all(&(len as u32).to_le_bytes()[..3])?;
     }
     writer.write_all(data)?;
-    let padding = (4 - (len % 4)) % 4;
+    let padding = tl_padding(len, header_len);
     if padding != 0 {
-        writer.write_all(&vec![0u8; padding])?;
+        writer.write_all(&[0u8; 3][..padding])?;
     }
     Ok(())
 }
@@ -136,19 +161,35 @@ fn write_tl_bytes<W: Write>(data: &[u8], writer: &mut W) -> Result<(), Error> {
 fn read_tl_bytes<R: Read>(reader: &mut R) -> Result<Vec<u8>, Error> {
     let mut first_byte = [0u8; 1];
     reader.read_exact(&mut first_byte)?;
-    let len = if first_byte[0] == 254 {
+    let (len, header_len) = if first_byte[0] == 254 {
         let mut buf = [0u8; 3];
         reader.read_exact(&mut buf)?;
-        u32::from_le_bytes([buf[0], buf[1], buf[2], 0]) as usize
+        (u32::from_le_bytes([buf[0], buf[1], buf[2], 0]) as usize, 4)
     } else {
-        first_byte[0] as usize
+        (first_byte[0] as usize, 1)
     };
-    let mut data = vec![0u8; len];
-    reader.read_exact(&mut data)?;
-    let padding = (4 - (len % 4)) % 4;
+
+    // Длину присылает удалённая сторона: без лимита `vec![0u8; len]`
+    // позволял зарезервировать мегабайты по одному заголовку.
+    if len > MAX_TL_BYTES {
+        return Err(Error::Custom(format!(
+            "TL bytes too long: {} (max {})",
+            len, MAX_TL_BYTES
+        )));
+    }
+
+    // Читаем ровно len байт, но буфер растёт только по мере реальных данных,
+    // а не до заявленной длины заранее.
+    let mut data = Vec::new();
+    let read = reader.by_ref().take(len as u64).read_to_end(&mut data)?;
+    if read != len {
+        return Err(Error::UnexpectedEof);
+    }
+
+    let padding = tl_padding(len, header_len);
     if padding != 0 {
-        let mut pad = vec![0u8; padding];
-        reader.read_exact(&mut pad)?;
+        let mut pad = [0u8; 3];
+        reader.read_exact(&mut pad[..padding])?;
     }
     Ok(data)
 }
@@ -156,7 +197,9 @@ fn read_tl_bytes<R: Read>(reader: &mut R) -> Result<Vec<u8>, Error> {
 // Вектор TL: количество элементов (i32) + элементы
 impl<T: TlWrite> TlWrite for Vec<T> {
     fn write_bytes<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
-        (self.len() as i32).write_bytes(writer)?;
+        let len = i32::try_from(self.len())
+            .map_err(|_| Error::Custom(format!("Too many vector items: {}", self.len())))?;
+        len.write_bytes(writer)?;
         for item in self {
             item.write_bytes(writer)?;
         }
@@ -165,8 +208,26 @@ impl<T: TlWrite> TlWrite for Vec<T> {
 }
 impl<T: TlRead> TlRead for Vec<T> {
     fn read_bytes<R: Read>(reader: &mut R) -> Result<Self, Error> {
-        let count = i32::read_bytes(reader)? as usize;
-        let mut vec = Vec::with_capacity(count);
+        let raw_count = i32::read_bytes(reader)?;
+        // Отрицательное значение раньше приводилось к usize и давало
+        // Vec::with_capacity(usize::MAX) — паника прямо из сетевого ввода.
+        if raw_count < 0 {
+            return Err(Error::Custom(format!(
+                "Negative TL vector length: {}",
+                raw_count
+            )));
+        }
+        let count = raw_count as usize;
+        if count > MAX_TL_VECTOR_ITEMS {
+            return Err(Error::Custom(format!(
+                "TL vector too long: {} (max {})",
+                count, MAX_TL_VECTOR_ITEMS
+            )));
+        }
+
+        // Предварительная аллокация ограничена: элементы читаются по одному,
+        // поэтому память тратится только на реально пришедшие данные.
+        let mut vec = Vec::with_capacity(count.min(1024));
         for _ in 0..count {
             vec.push(T::read_bytes(reader)?);
         }
@@ -302,6 +363,110 @@ impl TlRead for UserStatus {
             4 => Ok(UserStatus::LastWeek),
             5 => Ok(UserStatus::LastMonth),
             _ => Err(Error::Custom("Invalid UserStatus code".into())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+    use crate::tl::constructors::{HistoryResult, ResPQ, TlObject};
+    use std::io::Cursor;
+
+    fn sample_res_pq() -> TlObject {
+        TlObject::ResPQ(ResPQ {
+            nonce: Int128([1; 16]),
+            server_nonce: Int128([2; 16]),
+            pq: vec![0x11; 8],
+            p: vec![0x22; 4],
+            q: vec![0x33; 4],
+            server_public_key_fingerprints: vec![7],
+        })
+    }
+
+    #[test]
+    fn negative_vector_length_is_rejected() {
+        let mut buf = Vec::new();
+        (-1i32).write_bytes(&mut buf).unwrap();
+        // Раньше `as usize` давал usize::MAX и Vec::with_capacity паниковал.
+        assert!(Vec::<i64>::read_bytes(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn oversized_vector_length_is_rejected() {
+        let mut buf = Vec::new();
+        i32::MAX.write_bytes(&mut buf).unwrap();
+        assert!(Vec::<i64>::read_bytes(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn vector_count_without_payload_is_eof() {
+        let mut buf = Vec::new();
+        1000i32.write_bytes(&mut buf).unwrap();
+        assert!(Vec::<i64>::read_bytes(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn oversized_tl_bytes_length_is_rejected() {
+        // 0xFFFFFF = 16 МиБ — больше лимита, полезной нагрузки нет
+        let buf = vec![254u8, 0xFF, 0xFF, 0xFF];
+        assert!(Vec::<u8>::read_bytes(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn roundtrip_boundary_lengths() {
+        for len in [0usize, 1, 3, 253, 254, 255, 1024] {
+            let data = vec![0xABu8; len];
+            let mut buf = Vec::new();
+            data.write_bytes(&mut buf).unwrap();
+            let decoded = Vec::<u8>::read_bytes(&mut Cursor::new(&buf)).unwrap();
+            assert_eq!(data, decoded, "len={}", len);
+            assert_eq!(buf.len() % 4, 0, "TL-поле должно быть выровнено по 4 байта");
+        }
+    }
+
+    #[test]
+    fn forged_message_count_is_rejected() {
+        let obj = TlObject::HistoryResult(HistoryResult {
+            messages: vec![],
+            total_count: 0,
+        });
+        let mut buf = Vec::new();
+        obj.write_boxed(&mut buf).unwrap();
+
+        for forged in [-1i32, i32::MAX] {
+            let mut broken = buf.clone();
+            broken[4..8].copy_from_slice(&forged.to_le_bytes());
+            assert!(
+                TlObject::read_boxed(&mut Cursor::new(&broken)).is_err(),
+                "count={} должен давать ошибку, а не панику",
+                forged
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_input_never_panics() {
+        let mut buf = Vec::new();
+        sample_res_pq().write_boxed(&mut buf).unwrap();
+        for cut in 0..=buf.len() {
+            let _ = TlObject::read_boxed(&mut Cursor::new(&buf[..cut]));
+        }
+    }
+
+    #[test]
+    fn random_garbage_never_panics() {
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2000 {
+            let len = (next() % 96) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| (next() & 0xFF) as u8).collect();
+            let _ = TlObject::read_boxed(&mut Cursor::new(&bytes));
         }
     }
 }

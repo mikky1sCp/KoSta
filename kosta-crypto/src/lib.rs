@@ -1,6 +1,5 @@
 pub mod error;
 pub mod keys;
-pub mod kdf;
 pub mod padding;
 pub mod dh;
 pub mod encrypted_inner;

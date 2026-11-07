@@ -9,15 +9,10 @@ pub struct LoginRequest {
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
     pub success: bool,
+    pub token: Option<String>,
     pub auth_key_id: Option<i64>,
     pub user_id: Option<i64>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WsMessage {
-    pub action: String,
-    pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,12 +37,6 @@ pub struct MessageItem {
     pub media_type: Option<String>,
     pub media_size: Option<i64>,
     pub is_media: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SendMessagePayload {
-    pub chat_id: i64,
-    pub text: String,
 }
 
 #[derive(Debug, Deserialize)]

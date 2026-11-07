@@ -5,3 +5,7 @@ db_path = "kosta.db"
 use_tls = false
 cert_path = "cert.pem"
 key_path = "key.pem"
+# Close a connection after this many seconds without data from the client
+idle_timeout_secs = 300
+# Maximum number of simultaneous TCP connections
+max_connections = 256

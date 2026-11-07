@@ -1,18 +1,18 @@
 use anyhow::Result;
-use tracing_subscriber;
 use std::sync::Arc;
 use config::Config;
 use tokio::signal;
 
+mod db;
+mod dh_params;
 mod rate_limiter;
-mod metrics;
+mod secrets;
 mod server;
 mod handlers;
 mod session_store;
 mod server_keys;
-mod db;
-mod dh_params;
 mod session_cache;
+mod metrics;
 mod web;
 
 #[tokio::main]
@@ -30,11 +30,27 @@ async fn main() -> Result<()> {
         use_tls: config.get_bool("server.use_tls")?,
         cert_path: config.get_string("server.cert_path")?,
         key_path: config.get_string("server.key_path")?,
+        idle_timeout_secs: config
+            .get_int("server.idle_timeout_secs")
+            .map(|v| v.max(1) as u64)
+            .unwrap_or(300),
+        max_connections: config
+            .get_int("server.max_connections")
+            .map(|v| v.max(1) as usize)
+            .unwrap_or(256),
     };
 
     server_keys::init_server_key();
 
-    let db = Arc::new(db::Database::new(&server_config.db_path)?);
+    // Мастер-ключ для шифрования секретов сессий в БД. Хранится отдельно
+    // от базы, чтобы утечка файла БД не давала готовых сессий.
+    let master_key_path = std::env::var("KOSTA_MASTER_KEY_PATH")
+        .unwrap_or_else(|_| "session_master.key".to_string());
+    let secrets = Arc::new(secrets::SecretsBox::load_or_create(std::path::Path::new(
+        &master_key_path,
+    ))?);
+
+    let db = Arc::new(db::Database::new(&server_config.db_path, secrets)?);
     let cache = Arc::new(session_cache::SessionCache::new(1000, db.clone()));
 
     // Запускаем веб-сервер с кэшем
@@ -49,14 +65,36 @@ async fn main() -> Result<()> {
     tracing::info!("Starting KoSta server with config: {:?}", server_config);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let server_handle = tokio::spawn(server::run_server(server_config, db, shutdown_rx));
+    let mut server_handle = tokio::spawn(server::run_server(server_config, db, shutdown_rx));
 
-    signal::ctrl_c().await?;
-    tracing::info!("Received SIGINT, initiating graceful shutdown...");
-    let _ = shutdown_tx.send(());
-
-    if let Err(e) = tokio::time::timeout(tokio::time::Duration::from_secs(5), server_handle).await {
-        tracing::error!("Shutdown timeout: {:?}", e);
+    // Раньше Result из spawn просто выбрасывался: если, например, не удавалось
+    // собрать TLS identity, сервер молча не слушал порт, а процесс висел.
+    // Теперь провал старта виден в логе и завершает процесс с ошибкой.
+    tokio::select! {
+        joined = &mut server_handle => {
+            match joined {
+                Ok(Ok(())) => {
+                    tracing::warn!("Server task finished");
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Server stopped with error: {:#}", e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    tracing::error!("Server task failed: {}", e);
+                    return Err(anyhow::anyhow!("server task failed: {}", e));
+                }
+            }
+        }
+        _ = signal::ctrl_c() => {
+            tracing::info!("Received SIGINT, initiating graceful shutdown...");
+            let _ = shutdown_tx.send(());
+            if let Err(e) =
+                tokio::time::timeout(tokio::time::Duration::from_secs(5), server_handle).await
+            {
+                tracing::error!("Shutdown timeout: {:?}", e);
+            }
+        }
     }
 
     tracing::info!("Server gracefully shut down.");

@@ -1,5 +1,5 @@
 // kosta-server/src/server_keys.rs
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
+use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer};
 use rand::rngs::OsRng;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -43,12 +43,6 @@ impl ServerKeypair {
     pub fn sign(&self, data: &[u8]) -> Vec<u8> {
         let signature: Signature = self.secret.sign(data);
         signature.to_bytes().to_vec()
-    }
-
-    pub fn verify(public_key: &VerifyingKey, data: &[u8], sig: &[u8]) -> Result<()> {
-        let signature = Signature::from_slice(sig)?;
-        public_key.verify(data, &signature)?;
-        Ok(())
     }
 }
 

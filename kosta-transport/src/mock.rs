@@ -35,9 +35,15 @@ impl MockTransport {
     }
 }
 
+impl Default for MockTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Transport for MockTransport {
     fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
-        let frame = abridged::encode_frame(data);
+        let frame = abridged::encode_frame(data)?;
         self.writer.extend_from_slice(&frame);
         Ok(())
     }

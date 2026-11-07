@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod handlers;
 pub mod ws;
 pub mod models;
@@ -17,7 +18,6 @@ pub fn run_web_server(db: Arc<Database>, cache: Arc<SessionCache>, host: &str, p
     let cache = web::Data::new(cache);
     let state = web::Data::new(WebState::new());
     let host = host.to_string();
-    let port = port;
 
     actix_rt::System::new().block_on(async move {
         HttpServer::new(move || {
@@ -30,6 +30,7 @@ pub fn run_web_server(db: Arc<Database>, cache: Arc<SessionCache>, host: &str, p
                 .service(
                     web::scope("/api")
                         .route("/login", web::post().to(handlers::login))
+                        .route("/logout", web::post().to(handlers::logout))
                         .route("/chats", web::get().to(handlers::get_chats))
                         .route("/history", web::get().to(handlers::get_history))
                 )

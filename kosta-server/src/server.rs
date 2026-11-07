@@ -1,9 +1,10 @@
 // kosta-server/src/server.rs
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::io::Cursor;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{info, error, debug};
+use tracing::{info, error, debug, warn};
 use tokio::sync::broadcast;
 
 use native_tls::TlsAcceptor;
@@ -14,8 +15,9 @@ use kosta_core::tl::types::{TlRead, TlWrite};
 
 use crate::handlers;
 use crate::db::Database;
+use crate::rate_limiter::{check_limit, TCP_HANDSHAKE_LIMITER};
 use crate::session_cache::SessionCache;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -25,6 +27,10 @@ pub struct ServerConfig {
     pub use_tls: bool,
     pub cert_path: String,
     pub key_path: String,
+    /// Через сколько секунд простоя закрывать соединение.
+    pub idle_timeout_secs: u64,
+    /// Максимум одновременных TCP-соединений.
+    pub max_connections: usize,
 }
 
 pub async fn run_server(
@@ -37,17 +43,26 @@ pub async fn run_server(
     info!("Listening on {}", addr);
 
     let tls_acceptor = if config.use_tls {
-        let cert = std::fs::read(&config.cert_path)?;
-        let key = std::fs::read(&config.key_path)?;
-        let pkcs12 = native_tls::Identity::from_pkcs8(&cert, &key)?;
-        Some(TlsAcceptor::new(pkcs12)?)
+        let cert = std::fs::read(&config.cert_path).with_context(|| {
+            format!("не удалось прочитать cert_path={}", config.cert_path)
+        })?;
+        let key = std::fs::read(&config.key_path).with_context(|| {
+            format!("не удалось прочитать key_path={}", config.key_path)
+        })?;
+        let identity = native_tls::Identity::from_pkcs8(&cert, &key)
+            .context("не удалось собрать TLS identity (нужен PEM-сертификат и PKCS#8 ключ)")?;
+        Some(TlsAcceptor::new(identity).context("не удалось создать TLS acceptor")?)
     } else {
         None
     };
 
     let session_cache = Arc::new(SessionCache::new(1000, db.clone()));
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let idle_timeout = Duration::from_secs(config.idle_timeout_secs.max(1));
+    let write_timeout = Duration::from_secs(30);
+    let max_connections = config.max_connections.max(1);
 
-    let mut handles = Vec::new();
+    let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     loop {
         tokio::select! {
@@ -59,10 +74,25 @@ pub async fn run_server(
                         continue;
                     }
                 };
-                info!("New connection from {}", peer);
+
+                // Каждое соединение занимает поток из пула spawn_blocking,
+                // поэтому количество одновременных соединений ограничено.
+                let current = active_connections.fetch_add(1, Ordering::SeqCst) + 1;
+                if current > max_connections {
+                    active_connections.fetch_sub(1, Ordering::SeqCst);
+                    warn!(
+                        "Too many connections ({} > {}), rejecting {}",
+                        current, max_connections, peer
+                    );
+                    drop(stream);
+                    continue;
+                }
+                info!("New connection from {} (active: {})", peer, current);
+
                 let cache = session_cache.clone();
                 let db = Arc::clone(&db);
                 let acceptor = tls_acceptor.clone();
+                let active = Arc::clone(&active_connections);
 
                 let std_stream = match stream.into_std() {
                     Ok(s) => {
@@ -71,9 +101,20 @@ pub async fn run_server(
                     }
                     Err(e) => {
                         error!("Failed to convert to std stream: {}", e);
+                        active_connections.fetch_sub(1, Ordering::SeqCst);
                         continue;
                     }
                 };
+
+                // Таймауты обязательны: без них «залипший» клиент держит поток вечно.
+                if let Err(e) = std_stream
+                    .set_read_timeout(Some(idle_timeout))
+                    .and_then(|_| std_stream.set_write_timeout(Some(write_timeout)))
+                {
+                    error!("Failed to set socket timeouts for {}: {}", peer, e);
+                    active_connections.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
 
                 let handle = tokio::task::spawn_blocking(move || {
                     let transport_result: Result<Box<dyn Transport>, anyhow::Error> = if let Some(ref acc) = acceptor {
@@ -87,7 +128,7 @@ pub async fn run_server(
 
                     match transport_result {
                         Ok(mut transport) => {
-                            if let Err(e) = handle_client(&mut *transport, cache, db) {
+                            if let Err(e) = handle_client(&mut *transport, cache, db, peer) {
                                 error!("Client {} error: {}", peer, e);
                             }
                         }
@@ -95,8 +136,12 @@ pub async fn run_server(
                             error!("Failed to establish transport for {}: {}", peer, e);
                         }
                     }
+
+                    active.fetch_sub(1, Ordering::SeqCst);
                 });
                 handles.push(handle);
+                // Иначе вектор завершённых задач растёт вместе с числом подключений.
+                handles.retain(|h| !h.is_finished());
             }
             _ = shutdown_rx.recv() => {
                 info!("Shutdown signal received, stopping accept new connections.");
@@ -121,7 +166,12 @@ pub async fn run_server(
 // -----------------------------------------------------------------------------
 // Обработчик клиента (синхронный, блокирующий)
 // -----------------------------------------------------------------------------
-fn handle_client(transport: &mut dyn Transport, cache: Arc<SessionCache>, db: Arc<Database>) -> Result<()> {
+fn handle_client(
+    transport: &mut dyn Transport,
+    cache: Arc<SessionCache>,
+    db: Arc<Database>,
+    peer: std::net::SocketAddr,
+) -> Result<()> {
     loop {
         let raw = match transport.recv() {
             Ok(data) => data,
@@ -154,80 +204,87 @@ fn handle_client(transport: &mut dyn Transport, cache: Arc<SessionCache>, db: Ar
         };
         debug!("auth_key_id: {:?}", auth_key_id);
 
-        let (tl_data, crypto_ctx, _seq_no) = if let Some(id) = auth_key_id {
-            let mut session_data = cache.get_session(id)?
-                .ok_or(anyhow!("Session not found"))?;
-
+        let tl_data = if let Some(id) = auth_key_id {
             if raw.len() < 8 + 16 + 16 {
                 error!("Message too short for encrypted data");
                 continue;
             }
-            let nonce: [u8; 16] = raw[8..24].try_into()
+            let nonce: [u8; 16] = raw[8..24]
+                .try_into()
                 .map_err(|_| anyhow!("Invalid nonce length"))?;
             let tag_start = raw.len() - 16;
-            let tag: [u8; 16] = raw[tag_start..].try_into()
+            let tag: [u8; 16] = raw[tag_start..]
+                .try_into()
                 .map_err(|_| anyhow!("Invalid tag length"))?;
-            let ciphertext = &raw[24..tag_start];
-            debug!("Decrypting message (nonce={:?}, tag_len={})", &nonce[..4], tag.len());
+            let ciphertext = raw[24..tag_start].to_vec();
+            debug!("Decrypting message (nonce={:?})", &nonce[..4]);
 
-            let plaintext = match session_data.crypto.decrypt_incoming_server(&nonce, ciphertext, &tag) {
-                Ok(p) => p,
+            // Расшифровка, проверки и фиксация состояния сессии — атомарно:
+            // иначе два соединения с одним auth_key затирали счётчики друг друга.
+            let outcome = cache.mutate_session(id, |session| {
+                let plaintext = session
+                    .crypto
+                    .decrypt_incoming_server(&nonce, &ciphertext, &tag)
+                    .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+
+                let mut cursor = Cursor::new(&plaintext);
+                let msg_id = i64::read_bytes(&mut cursor)?;
+                let seq_no = i32::read_bytes(&mut cursor)?;
+                debug!("Parsed msg_id={}, seq_no={}", msg_id, seq_no);
+
+                // Проверка монотонности msg_id
+                if msg_id <= session.last_recv_msg_id {
+                    return Err(anyhow!(
+                        "msg_id not monotonically increasing: {} <= {}",
+                        msg_id,
+                        session.last_recv_msg_id
+                    ));
+                }
+
+                // Защита от replay-атак
+                {
+                    let mut recent = session.recent_msg_ids.lock().unwrap();
+                    if recent.contains(&msg_id) {
+                        return Err(anyhow!("Replay attack detected: msg_id {}", msg_id));
+                    }
+                    recent.put(msg_id, ());
+                }
+
+                let expected_seq = session.recv_seq_no + 1;
+                if seq_no != expected_seq {
+                    return Err(anyhow!(
+                        "Invalid seq_no: got {}, expected {}",
+                        seq_no,
+                        expected_seq
+                    ));
+                }
+
+                // Проверка временной метки (старшие 32 бита msg_id — секунды)
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                let now_msg_id = (now.as_secs() as i64) << 32;
+                if ((msg_id - now_msg_id) >> 32).abs() > 300 {
+                    return Err(anyhow!("Message timestamp out of range"));
+                }
+
+                session.recv_seq_no = seq_no;
+                session.last_recv_msg_id = msg_id;
+                Ok(plaintext[cursor.position() as usize..].to_vec())
+            });
+
+            match outcome {
+                Ok(Some(tl_data)) => tl_data,
+                Ok(None) => {
+                    error!("Session not found for auth_key_id {}", id);
+                    continue;
+                }
                 Err(e) => {
-                    error!("Decryption failed: {}", e);
+                    error!("Rejected encrypted message: {:#}", e);
                     continue;
                 }
-            };
-            debug!("Decrypted size: {} bytes", plaintext.len());
-
-            let mut cursor = Cursor::new(&plaintext);
-            let msg_id = i64::read_bytes(&mut cursor)?;
-            let seq_no = i32::read_bytes(&mut cursor)?;
-            debug!("Parsed msg_id={}, seq_no={}", msg_id, seq_no);
-
-            // Проверка монотонности msg_id
-            if msg_id <= session_data.last_recv_msg_id {
-                error!("msg_id not monotonically increasing: {} <= {}", msg_id, session_data.last_recv_msg_id);
-                continue;
             }
-
-            // Защита от replay-атак
-            {
-                let mut recent = session_data.recent_msg_ids.lock().unwrap();
-                if recent.contains(&msg_id) {
-                    error!("Replay attack detected: msg_id {} already used", msg_id);
-                    continue;
-                }
-                recent.put(msg_id, ());
-            }
-
-            // Проверка seq_no
-            let expected_seq = session_data.recv_seq_no + 1;
-            if seq_no != expected_seq {
-                error!("Invalid seq_no: got {}, expected {}", seq_no, expected_seq);
-                continue;
-            }
-
-            // Проверка временной метки
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let now_msg_id = (now.as_millis() as i64) << 32;
-            let diff_ms = ((msg_id - now_msg_id) >> 32).abs();
-            if diff_ms > 30_000 {
-                error!("Message timestamp out of range: diff={}ms", diff_ms);
-                continue;
-            }
-
-            // Обновляем состояние сессии
-            session_data.recv_seq_no = seq_no;
-            session_data.last_recv_msg_id = msg_id;
-            db.update_session_recv_seq_and_last_msg(id, seq_no, msg_id)?;
-            db.update_session_counters(id, session_data.crypto.send_counter, session_data.crypto.recv_counter)?;
-            cache.update_session(id, session_data.clone())?;
-
-            let tl_data = &plaintext[cursor.position() as usize..];
-            (tl_data.to_vec(), Some(session_data.crypto.clone()), seq_no)
         } else {
             debug!("Plaintext message, size: {} bytes", raw.len());
-            (raw, None, -1)
+            raw
         };
 
         let obj = match TlObject::read_boxed(&mut Cursor::new(&tl_data)) {
@@ -239,54 +296,70 @@ fn handle_client(transport: &mut dyn Transport, cache: Arc<SessionCache>, db: Ar
         };
         debug!("Parsed TL object: {:?}", obj);
 
-        let response = handlers::handle_request(transport, obj, &*cache, &db, auth_key_id)?;
+        // Рукопожатие — самая дорогая и при этом анонимная часть протокола
+        // (ReqDHParams = 2048-битный modpow). Ограничиваем его по IP.
+        if matches!(
+            &obj,
+            TlObject::ReqPq(_) | TlObject::ReqDHParams(_) | TlObject::SetClientDHParams(_)
+        ) {
+            if let Err(e) = check_limit(&TCP_HANDSHAKE_LIMITER, peer.ip().to_string()) {
+                warn!("Handshake rate limit exceeded for {}: {}", peer, e);
+                return Err(anyhow!("handshake rate limit exceeded for {}", peer));
+            }
+        }
+
+        // Ошибка обработчика не должна обрывать соединение: логируем и живём дальше.
+        let response = match handlers::handle_request(transport, obj, &cache, &db, auth_key_id) {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("Handler error: {:#}", e);
+                continue;
+            }
+        };
 
         if let Some(data) = response {
             debug!("Sending response, size: {} bytes", data.len());
-            if let Some(mut crypto) = crypto_ctx {
-                let (send_seq_no, msg_id_counter) = if let Some(id) = auth_key_id {
-                    if let Ok(Some(mut session)) = cache.get_session(id) {
-                        let seq = session.send_seq_no + 1;
-                        session.send_seq_no = seq;
-                        let counter = session.msg_id_counter;
-                        session.msg_id_counter = counter.wrapping_add(1);
-                        cache.update_session(id, session.clone())?;
-                        db.update_session_send_state(id, seq, session.msg_id_counter)?;
-                        (seq, counter)
-                    } else {
-                        (-1, 0)
+            if let Some(id) = auth_key_id {
+                // Шифрование ответа и сдвиг send-счётчиков — одной атомарной операцией.
+                let encrypted = match cache.mutate_session(id, |session| {
+                    let seq_no = session.send_seq_no + 1;
+                    let counter = session.msg_id_counter;
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                    // старшие 32 бита — unix-время в секундах (как в MTProto)
+                    let msg_id = ((now.as_secs() as i64) << 32) | (counter as i64);
+
+                    let mut plain_with_header = Vec::with_capacity(8 + data.len());
+                    msg_id.write_bytes(&mut plain_with_header)?;
+                    seq_no.write_bytes(&mut plain_with_header)?;
+                    plain_with_header.extend_from_slice(&data);
+
+                    let (nonce, ciphertext, tag) = session
+                        .crypto
+                        .encrypt_outgoing_server(&plain_with_header)?;
+
+                    session.send_seq_no = seq_no;
+                    session.msg_id_counter = counter.wrapping_add(1);
+                    Ok((nonce, ciphertext, tag))
+                }) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        error!("Failed to prepare encrypted response: {:#}", e);
+                        continue;
                     }
-                } else {
-                    (-1, 0)
                 };
 
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                let time_part = (now.as_millis() as i64) << 32;
-                let msg_id = time_part | (msg_id_counter as i64);
-
-                let mut plain_with_header = Vec::new();
-                msg_id.write_bytes(&mut plain_with_header)?;
-                send_seq_no.write_bytes(&mut plain_with_header)?;
-                plain_with_header.extend_from_slice(&data);
-
-                let (nonce, ciphertext, tag) = crypto.encrypt_outgoing_server(&plain_with_header)?;
-                if let Some(id) = auth_key_id {
-                    if let Ok(Some(mut session)) = cache.get_session(id) {
-                        session.crypto = crypto.clone();
-                        session.send_counter = crypto.send_counter;
-                        session.recv_counter = crypto.recv_counter;
-                        db.update_session_counters(id, crypto.send_counter, crypto.recv_counter)?;
-                        cache.update_session(id, session.clone())?;
+                match encrypted {
+                    Some((nonce, ciphertext, tag)) => {
+                        let mut msg = Vec::with_capacity(8 + 16 + ciphertext.len() + 16);
+                        msg.extend_from_slice(&id.to_le_bytes());
+                        msg.extend_from_slice(&nonce);
+                        msg.extend_from_slice(&ciphertext);
+                        msg.extend_from_slice(&tag);
+                        transport.send(&msg)?;
+                        debug!("Encrypted response sent");
                     }
+                    None => error!("Session {} disappeared while sending response", id),
                 }
-                let auth_key_id_val = auth_key_id.unwrap_or(0);
-                let mut msg = Vec::with_capacity(8 + 16 + ciphertext.len() + 16);
-                msg.extend_from_slice(&auth_key_id_val.to_le_bytes());
-                msg.extend_from_slice(&nonce);
-                msg.extend_from_slice(&ciphertext);
-                msg.extend_from_slice(&tag);
-                transport.send(&msg)?;
-                debug!("Encrypted response sent");
             } else {
                 transport.send(&data)?;
                 debug!("Plain response sent successfully");

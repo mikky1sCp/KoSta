@@ -6,15 +6,15 @@ pub fn tmp_key(new_nonce: &Int256, server_nonce: &Int128) -> ([u8; 32], [u8; 12]
     use sha2::{Sha256, Digest};
 
     let mut hasher = Sha256::new();
-    hasher.update(&new_nonce.0);
-    hasher.update(&server_nonce.0);
+    hasher.update(new_nonce.0);
+    hasher.update(server_nonce.0);
     let hash = hasher.finalize();
     let mut aes_key = [0u8; 32];
     aes_key.copy_from_slice(&hash[..32]);
 
     let mut hasher2 = Sha256::new();
-    hasher2.update(&server_nonce.0);
-    hasher2.update(&new_nonce.0);
+    hasher2.update(server_nonce.0);
+    hasher2.update(new_nonce.0);
     let hash2 = hasher2.finalize();
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&hash2[..12]);
@@ -27,15 +27,15 @@ pub fn tmp_key_from_nonce(nonce: &Int128, server_nonce: &Int128) -> ([u8; 32], [
     use sha2::{Sha256, Digest};
 
     let mut hasher = Sha256::new();
-    hasher.update(&nonce.0);
-    hasher.update(&server_nonce.0);
+    hasher.update(nonce.0);
+    hasher.update(server_nonce.0);
     let hash = hasher.finalize();
     let mut aes_key = [0u8; 32];
     aes_key.copy_from_slice(&hash[..32]);
 
     let mut hasher2 = Sha256::new();
-    hasher2.update(&server_nonce.0);
-    hasher2.update(&nonce.0);
+    hasher2.update(server_nonce.0);
+    hasher2.update(nonce.0);
     let hash2 = hasher2.finalize();
     let mut nonce_gcm = [0u8; 12];
     nonce_gcm.copy_from_slice(&hash2[..12]);

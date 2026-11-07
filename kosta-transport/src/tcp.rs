@@ -15,7 +15,7 @@ impl<S: Read + Write> StreamTransport<S> {
 
 impl<S: Read + Write + 'static> Transport for StreamTransport<S> {
     fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
-        let frame = abridged::encode_frame(data);
+        let frame = abridged::encode_frame(data)?;
         self.stream.write_all(&frame)?;
         self.stream.flush()?;
         Ok(())

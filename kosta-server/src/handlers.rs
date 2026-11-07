@@ -7,7 +7,6 @@ use rand::RngCore;
 use std::io::Cursor;
 use num_bigint::BigUint;
 use num_traits::One;
-use sha1;
 use kosta_core::tl::constructors::*;
 use kosta_core::tl::types::{MessageId, UserId, UserStatus, DialogId};
 use kosta_core::tl::types::{Int128, Int256, TlWrite};
@@ -25,28 +24,56 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 
 use crate::db::Database;
+use crate::db::SessionRow;
 use crate::session_cache::SessionCache;
 use crate::server_keys::get_server_keypair;
 use crate::dh_params::{DH_PRIME, DH_G};
 
 // Хранилище для временных данных handshake с временем создания
+type HandshakeRecord = (Int256, Vec<u8>, Instant);
+type HandshakeStore = Mutex<HashMap<Vec<u8>, HandshakeRecord>>;
+
+/// Сколько живёт незавершённое рукопожатие.
+const HANDSHAKE_TTL: Duration = Duration::from_secs(60);
+
+/// Предел числа «висящих» рукопожатий: каждая запись хранит серверный
+/// DH-ключ, поэтому неограниченный рост — это утечка памяти и CPU.
+const HANDSHAKE_STORE_MAX: usize = 10_000;
+
 lazy_static! {
-    static ref HANDSHAKE_STORE: Mutex<HashMap<Vec<u8>, (Int256, Vec<u8>, Instant)>> = Mutex::new(HashMap::new());
+    static ref HANDSHAKE_STORE: HandshakeStore = Mutex::new(HashMap::new());
 }
 
 // Очистка устаревших записей
 fn clean_handshake_store() {
     let now = Instant::now();
-    let timeout = Duration::from_secs(60);
     let mut store = HANDSHAKE_STORE.lock().unwrap();
-    store.retain(|_, (_, _, time)| now - *time < timeout);
+    store.retain(|_, (_, _, time)| now - *time < HANDSHAKE_TTL);
+}
+
+/// Сохраняет данные рукопожатия, предварительно вычистив просроченные
+/// и не дав хранилищу вырасти выше предела.
+fn remember_handshake(key: Vec<u8>, record: HandshakeRecord) -> Result<()> {
+    let mut store = HANDSHAKE_STORE.lock().unwrap();
+    let now = Instant::now();
+    store.retain(|_, (_, _, time)| now - *time < HANDSHAKE_TTL);
+
+    if store.len() >= HANDSHAKE_STORE_MAX && !store.contains_key(&key) {
+        return Err(anyhow!(
+            "too many pending handshakes ({}), retry later",
+            store.len()
+        ));
+    }
+
+    store.insert(key, record);
+    Ok(())
 }
 
 // Генерация случайного простого числа (для сервера)
 fn generate_random_prime(bits: usize) -> BigUint {
     let mut rng = OsRng;
     loop {
-        let mut bytes = vec![0u8; (bits + 7) / 8];
+        let mut bytes = vec![0u8; bits.div_ceil(8)];
         rng.fill_bytes(&mut bytes);
         let num = BigUint::from_bytes_le(&bytes);
         let num = if num < BigUint::from(2u32) { BigUint::from(3u32) } else { num | BigUint::one() };
@@ -61,6 +88,19 @@ fn get_user_id(auth_key_id: Option<i64>, db: &Database) -> Result<i64> {
     let id = auth_key_id.ok_or_else(|| anyhow!("Missing auth_key_id"))?;
     let session = db.get_session(id)?.ok_or_else(|| anyhow!("Session not found"))?;
     Ok(session.0)
+}
+
+/// Проверяет, что пользователь является участником диалога.
+/// Без этой проверки любой авторизованный клиент мог писать и читать в чужой dialog_id.
+fn ensure_participant(db: &Database, dialog_id: i64, user_id: i64) -> Result<()> {
+    let participants = db.get_dialog_participants(dialog_id)?;
+    if participants.is_empty() {
+        return Err(anyhow!("Dialog {} not found", dialog_id));
+    }
+    if !participants.contains(&user_id) {
+        return Err(anyhow!("User {} is not a participant of dialog {}", user_id, dialog_id));
+    }
+    Ok(())
 }
 
 // ---------- Главный обработчик ----------
@@ -210,10 +250,7 @@ fn handle_req_dh_params(
     let mut key = Vec::with_capacity(32);
     key.extend_from_slice(&req.nonce.0);
     key.extend_from_slice(&req.server_nonce.0);
-    {
-        let mut store = HANDSHAKE_STORE.lock().unwrap();
-        store.insert(key, (new_nonce.clone(), a.to_bytes_be(), Instant::now()));
-    }
+    remember_handshake(key, (new_nonce.clone(), a.to_bytes_be(), Instant::now()))?;
 
     let inner = ServerDHInnerData {
         nonce: req.nonce.clone(),
@@ -307,22 +344,24 @@ fn handle_set_client_dh_params(
 
     db.save_session_full(
         auth_key_id,
-        user_id,
-        0,
-        &req.nonce.0,
-        &req.server_nonce.0,
-        &new_nonce.0,
-        -1,
-        &auth_key.0,
-        &crypto_ctx.client_write_key,
-        &crypto_ctx.client_mac_key,
-        &crypto_ctx.server_write_key,
-        &crypto_ctx.server_mac_key,
-        last_msg_id,
-        send_counter,
-        recv_counter,
-        -1,
-        0,
+        &SessionRow {
+            user_id,
+            server_salt: 0,
+            nonce: &req.nonce.0,
+            server_nonce: &req.server_nonce.0,
+            new_nonce: &new_nonce.0,
+            recv_seq_no: -1,
+            auth_key: &auth_key.0,
+            client_write_key: &crypto_ctx.client_write_key,
+            client_mac_key: &crypto_ctx.client_mac_key,
+            server_write_key: &crypto_ctx.server_write_key,
+            server_mac_key: &crypto_ctx.server_mac_key,
+            last_msg_id,
+            send_counter,
+            recv_counter,
+            send_seq_no: -1,
+            msg_id_counter: 0,
+        },
     )?;
 
     // Сохраняем в кэш
@@ -332,7 +371,6 @@ fn handle_set_client_dh_params(
     )));
     let session_data = SessionData {
         auth_key,
-        auth_key_id,
         user_id,
         server_salt: 0,
         nonce: req.nonce.clone(),
@@ -355,7 +393,7 @@ fn handle_set_client_dh_params(
     }
 
     let mut hasher = sha1::Sha1::new();
-    hasher.update(&shared_secret.to_bytes_le());
+    hasher.update(shared_secret.to_bytes_le());
     let hash = hasher.finalize();
     let mut new_nonce_hash1 = [0u8; 16];
     new_nonce_hash1.copy_from_slice(&hash[0..16]);
@@ -393,9 +431,13 @@ fn handle_sign_up(
     let user_id = db.create_user(&req.phone, &req.password)?;
     if let Some(id) = auth_key_id {
         db.update_session_user_id(id, user_id)?;
-        if let Ok(Some(mut session)) = cache.get_session(id) {
+        // Атомарно: иначе параллельно обрабатываемое сообщение могло
+        // перезаписать user_id устаревшим клоном сессии.
+        if let Err(e) = cache.mutate_session(id, |session| {
             session.user_id = user_id;
-            cache.update_session(id, session)?;
+            Ok(())
+        }) {
+            warn!("Failed to attach user {} to session: {:#}", user_id, e);
         }
     }
     info!("User registered with phone: {}", req.phone);
@@ -407,6 +449,7 @@ fn handle_send_message(req: SendMessage, db: &Database, auth_key_id: Option<i64>
     let user_id = get_user_id(auth_key_id, db)?;
     // Предполагаем, что chat_id в запросе соответствует dialog_id
     let dialog_id = req.chat_id.0; // ChatId -> i64
+    ensure_participant(db, dialog_id, user_id)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -434,8 +477,9 @@ fn handle_send_message(req: SendMessage, db: &Database, auth_key_id: Option<i64>
 
 // ---------- GetHistory (адаптирован под dialog_id и с медиа-полями) ----------
 fn handle_get_history(req: GetHistory, db: &Database, auth_key_id: Option<i64>) -> Result<Option<Vec<u8>>> {
-    let _user_id = get_user_id(auth_key_id, db)?; // просто проверяем авторизацию
+    let user_id = get_user_id(auth_key_id, db)?; // проверяем авторизацию
     let dialog_id = req.chat_id.0;
+    ensure_participant(db, dialog_id, user_id)?;
 
     let rows = db.get_history(dialog_id, req.offset, req.limit)?;
     // rows: Vec<(id, sender_id, text, ts, out, read, delivered, media_path, media_type, media_size, is_media)>

@@ -4,10 +4,8 @@ use actix_web_actors::ws;
 use actix::{Actor, StreamHandler, AsyncContext, Handler, Message, ActorContext};
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::{Instant, Duration};
 use tracing::{info, error, warn};
 use crate::db::Database;
-use crate::session_cache::SessionCache;
 use crate::web::state::WebState;
 use crate::metrics::{WS_CONNECTIONS, MESSAGES_SENT, AUTH_SUCCESS};
 // Импорт rate limiter
@@ -42,11 +40,9 @@ pub struct TypingNotification {
 
 pub struct WsActor {
     pub db: Arc<Database>,
-    pub cache: Arc<SessionCache>,
     pub state: WebState,
     pub user_id: Option<i64>,
     pub dialog_id: Option<i64>,
-    pub last_typing_ts: Instant,
 }
 
 impl Actor for WsActor {
@@ -80,8 +76,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                     match action {
                         // ---------- Аутентификация ----------
                         Some("auth") => {
-                            if let Some(user_id) = payload.get("user_id").and_then(Value::as_i64) {
-                                if let Ok(Some((_status, _last_seen))) = self.db.get_user_status(user_id) {
+                            // Аутентификация только по сессионному токену.
+                            // user_id из payload больше не принимается.
+                            let user_id = payload
+                                .get("token")
+                                .and_then(Value::as_str)
+                                .and_then(|token| self.db.user_id_by_token(token).ok().flatten());
+                            match user_id {
+                                Some(user_id) => {
                                     self.user_id = Some(user_id);
                                     if let Err(e) = self.db.set_user_status(user_id, 0) {
                                         error!("Failed to set online status for user {}: {}", user_id, e);
@@ -95,13 +97,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                                     });
                                     ctx.text(resp.to_string());
                                     info!("WebSocket authenticated with user_id={}", user_id);
-                                } else {
+                                }
+                                None => {
                                     let resp = serde_json::json!({
                                         "type": "auth_failed",
-                                        "payload": { "error": "Invalid user_id" }
+                                        "payload": { "error": "Invalid or expired token" }
                                     });
                                     ctx.text(resp.to_string());
-                                    error!("WebSocket auth failed: invalid user_id={}", user_id);
+                                    error!("WebSocket auth failed: invalid token");
                                 }
                             }
                         }
@@ -200,7 +203,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                                         let msg_str = msg_data.to_string();
 
                                         ctx.text(msg_str.clone());
-                                        self.state.broadcast_to_dialog(dialog_id, &msg_str, Some(user_id));
+                                        let self_addr = ctx.address();
+                                        self.state.broadcast_to_dialog(dialog_id, &msg_str, Some(&self_addr));
 
                                         info!("Message {} broadcasted to dialog {}", msg_id, dialog_id);
                                     }
@@ -300,16 +304,13 @@ pub async fn websocket_handler(
     req: HttpRequest,
     stream: web::Payload,
     db: web::Data<Arc<Database>>,
-    cache: web::Data<Arc<SessionCache>>,
     state: web::Data<WebState>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let ws = WsActor {
         db: db.get_ref().clone(),
-        cache: cache.get_ref().clone(),
         state: state.get_ref().clone(),
         user_id: None,
         dialog_id: None,
-        last_typing_ts: Instant::now(),
     };
     ws::start(ws, &req, stream)
 }

@@ -51,6 +51,21 @@ fn compute_auth_key_id(shared_secret: &BigUint) -> i64 {
 // Основная структура Session
 // =============================================================================
 
+/// Параметры подключения к серверу.
+#[derive(Clone, Debug)]
+#[derive(Default)]
+pub struct ConnectOptions {
+    pub use_tls: bool,
+    /// Домен для проверки сертификата; по умолчанию берётся `host`.
+    pub tls_domain: Option<String>,
+    /// ⚠️ Только для локальной отладки с самоподписанным сертификатом:
+    /// отключает проверку сертификата и имени хоста (TLS перестаёт защищать от MITM).
+    pub allow_invalid_certs: bool,
+    /// Таймаут операций в секундах; 0 — значение по умолчанию.
+    pub timeout_secs: u64,
+}
+
+
 /// Клиентская сессия, управляющая подключением, аутентификацией и обменом сообщениями.
 pub struct Session<T: Transport> {
     pub auth_key_id: Option<i64>,
@@ -69,27 +84,24 @@ pub struct Session<T: Transport> {
     pub user_id: Option<UserId>,
     pub use_tls: bool,
     pub tls_domain: Option<String>,
+    pub allow_invalid_certs: bool,
     pub timeout: Duration,
 }
 
 impl Session<Box<dyn Transport>> {
     /// Создаёт новое соединение с сервером.
     ///
-    /// # Аргументы
-    /// * `host` – адрес сервера
-    /// * `port` – порт
-    /// * `use_tls` – использовать TLS
-    /// * `tls_domain` – домен для TLS (если требуется)
-    /// * `timeout_secs` – таймаут операций в секундах (0 – без таймаута)
-    pub fn connect(
-        host: &str,
-        port: u16,
-        use_tls: bool,
-        tls_domain: &str,
-        timeout_secs: u64,
-    ) -> Result<Self, KostaError> {
-        let transport: Box<dyn Transport> = if use_tls {
-            let tls_stream = tls::connect_tls(host, port, tls_domain)
+    /// TLS-соединение проверяет сертификат сервера; отключить проверку можно
+    /// только явно через [`ConnectOptions::allow_invalid_certs`].
+    pub fn connect(host: &str, port: u16, opts: ConnectOptions) -> Result<Self, KostaError> {
+        let timeout_secs = opts.timeout_secs;
+        let tls_domain = opts
+            .tls_domain
+            .clone()
+            .unwrap_or_else(|| host.to_string());
+
+        let transport: Box<dyn Transport> = if opts.use_tls {
+            let tls_stream = tls::connect_tls(host, port, &tls_domain, opts.allow_invalid_certs)
                 .map_err(|e| KostaError::ConnectionFailed(format!("TLS connection failed: {}", e)))?;
             Box::new(tls_stream)
         } else {
@@ -118,8 +130,9 @@ impl Session<Box<dyn Transport>> {
             host: Some(host.to_string()),
             port: Some(port),
             user_id: None,
-            use_tls,
-            tls_domain: Some(tls_domain.to_string()),
+            use_tls: opts.use_tls,
+            tls_domain: opts.tls_domain,
+            allow_invalid_certs: opts.allow_invalid_certs,
             timeout: if timeout_secs > 0 {
                 Duration::from_secs(timeout_secs)
             } else {
@@ -148,6 +161,7 @@ impl Session<Box<dyn Transport>> {
             user_id: None,
             use_tls: false,
             tls_domain: None,
+            allow_invalid_certs: false,
             timeout: if timeout_secs > 0 {
                 Duration::from_secs(timeout_secs)
             } else {
@@ -164,7 +178,7 @@ impl Session<Box<dyn Transport>> {
             let use_tls = self.use_tls;
             let domain = self.tls_domain.as_deref().unwrap_or(host);
             let transport: Box<dyn Transport> = if use_tls {
-                let tls_stream = tls::connect_tls(host, port, domain)
+                let tls_stream = tls::connect_tls(host, port, domain, self.allow_invalid_certs)
                     .map_err(|e| KostaError::ConnectionFailed(format!("TLS reconnect failed: {}", e)))?;
                 Box::new(tls_stream)
             } else {
@@ -215,6 +229,7 @@ impl Session<MockTransport> {
             user_id: None,
             use_tls: false,
             tls_domain: None,
+            allow_invalid_certs: false,
             timeout: Duration::from_secs(30),
         }
     }
@@ -390,7 +405,7 @@ impl<T: Transport> Session<T> {
 
         // --- проверка new_nonce_hash1 ---
         let mut hasher = Sha1::new();
-        hasher.update(&shared_secret.to_bytes_le());
+        hasher.update(shared_secret.to_bytes_le());
         let hash = hasher.finalize();
         let mut expected_hash = [0u8; 16];
         expected_hash.copy_from_slice(&hash[0..16]);
@@ -427,7 +442,11 @@ impl<T: Transport> Session<T> {
         let mut plain_bytes = Vec::new();
         if self.crypto.is_some() {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let time_part = (now.as_millis() as i64) << 32;
+            // MTProto-семантика msg_id: старшие 32 бита — unix-время в СЕКУНДАХ,
+            // младшие — счётчик. as_millis() здесь давал 1.8e12 << 32 = 7.7e21,
+            // т.е. переполнение i64: msg_id становился отрицательным и сервер
+            // отбрасывал каждое зашифрованное сообщение.
+            let time_part = (now.as_secs() as i64) << 32;
             let msg_id = time_part | (self.msg_id_counter as i64);
             self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
             self.last_msg_id = msg_id;
@@ -499,9 +518,9 @@ impl<T: Transport> Session<T> {
             self.recv_seq_no = seq_no;
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let now_msg_id = (now.as_millis() as i64) << 32;
-            let diff_ms = ((msg_id - now_msg_id) >> 32).abs();
-            if diff_ms > 30_000 {
+            let now_msg_id = (now.as_secs() as i64) << 32;
+            let diff_secs = ((msg_id - now_msg_id) >> 32).abs();
+            if diff_secs > 300 {
                 return Err(KostaError::Protocol("Message timestamp out of range".into()));
             }
 
@@ -557,7 +576,7 @@ impl<T: Transport> Session<T> {
 
     /// Обновляет статус текущего пользователя.
     pub fn update_status(&mut self, status: UserStatus) -> Result<(), KostaError> {
-        let user_id = self.user_id.clone().unwrap_or(UserId(0));
+        let user_id = self.user_id.unwrap_or(UserId(0));
         let req = TlObject::UserStatusUpdate(UserStatusUpdate { user_id, status });
         self.send_tl(&req)?;
         Ok(())

@@ -1,0 +1,7 @@
+/target
+/kosta.db
+/kosta.db-*
+/server_key.der
+/server_public_key.der
+/session_master.key
+*.pem
