@@ -7,9 +7,10 @@
 //! «своим» ключом и падал с непонятным `fingerprint mismatch` вместо
 //! внятной ошибки «скопируйте ключ с сервера».
 
-use ed25519_dalek::{Signature, Signer, Verifier, SigningKey, VerifyingKey};
-use crate::error::KostaError;
+use ed25519_dalek::VerifyingKey;
 use std::path::{Path, PathBuf};
+
+use crate::error::KostaError;
 
 /// Путь к публичному ключу сервера по умолчанию.
 pub const DEFAULT_SERVER_PUBKEY_PATH: &str = "server_public_key.der";
@@ -19,26 +20,6 @@ pub const SERVER_PUBKEY_PATH_ENV: &str = "KOSTA_SERVER_PUBKEY_PATH";
 
 /// Длина публичного ключа ed25519 в байтах.
 const PUBLIC_KEY_LEN: usize = 32;
-
-/// Пара ключей сервера (для подписи)
-pub struct ServerKeypair {
-    pub public: VerifyingKey,
-    pub secret: SigningKey,
-}
-
-impl ServerKeypair {
-    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
-        let signature: Signature = self.secret.sign(data);
-        signature.to_bytes().to_vec()
-    }
-
-    pub fn verify(public_key: &VerifyingKey, data: &[u8], sig: &[u8]) -> Result<(), KostaError> {
-        let signature = Signature::from_slice(sig)
-            .map_err(|_| KostaError::Protocol("Invalid signature format".into()))?;
-        public_key.verify(data, &signature)
-            .map_err(|_| KostaError::Protocol("Signature verification failed".into()))
-    }
-}
 
 /// Читает публичный ключ сервера из указанного файла.
 ///
@@ -100,6 +81,7 @@ pub fn get_server_public_key() -> Result<VerifyingKey, KostaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
     /// Создаёт уникальный временный каталог для теста.

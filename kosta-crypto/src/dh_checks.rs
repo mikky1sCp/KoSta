@@ -88,6 +88,63 @@ pub fn validate_public_value(public: &BigUint, p: &BigUint) -> Result<(), &'stat
     Ok(())
 }
 
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    a
+}
+
+fn mul_mod(a: u64, b: u64, modulus: u64) -> u64 {
+    ((a as u128 * b as u128) % (modulus as u128)) as u64
+}
+
+/// Поллард-ро для 64-битных чисел (нужен клиенту для факторизации `pq`).
+fn pollard_rho(n: u64) -> Option<u64> {
+    if n.is_multiple_of(2) {
+        return Some(2);
+    }
+    let mut c = 1u64;
+    while c < 128 {
+        let mut x = 2u64;
+        let mut y = 2u64;
+        let mut d = 1u64;
+        while d == 1 {
+            x = (mul_mod(x, x, n) + c) % n;
+            y = (mul_mod(y, y, n) + c) % n;
+            y = (mul_mod(y, y, n) + c) % n;
+            if x == y {
+                break;
+            }
+            d = gcd(x.abs_diff(y), n);
+        }
+        if d != 1 && d != n {
+            return Some(d);
+        }
+        c += 1;
+    }
+    None
+}
+
+/// Раскладывает 64-битное полупростое число на два множителя (`pq` из
+/// `resPQ`). Возвращает `None`, если число простое или факторизация не удалась.
+pub fn factor_semiprime(n: u64) -> Option<(u64, u64)> {
+    if n < 4 {
+        return None;
+    }
+    if n.is_multiple_of(2) {
+        return Some((2, n / 2));
+    }
+    let factor = pollard_rho(n)?;
+    let other = n / factor;
+    if factor <= 1 || other <= 1 {
+        return None;
+    }
+    Some((factor.min(other), factor.max(other)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +176,28 @@ mod tests {
         assert!(validate_public_value(&BigUint::from(1u32), &p).is_err());
         assert!(validate_public_value(&p_minus_one, &p).is_err());
         assert!(validate_public_value(&BigUint::from(5u32), &p).is_ok());
+    }
+
+    #[test]
+    fn factor_semiprime_small_and_medium() {
+        assert_eq!(factor_semiprime(15), Some((3, 5)));
+        assert_eq!(factor_semiprime(9), Some((3, 3)));
+        assert_eq!(factor_semiprime(2 * 1_000_003), Some((2, 1_000_003)));
+
+        let p = 1_000_000_007u64;
+        let q = 1_000_000_009u64;
+        let pq = p * q;
+        let (a, b) = factor_semiprime(pq).expect("pq must be factorable");
+        assert_eq!(a * b, pq);
+        assert_eq!((a, b), (p, q));
+        assert!(is_prime(&BigUint::from(a)));
+        assert!(is_prime(&BigUint::from(b)));
+    }
+
+    #[test]
+    fn factor_semiprime_rejects_primes_and_small_numbers() {
+        assert_eq!(factor_semiprime(1), None);
+        assert_eq!(factor_semiprime(3), None);
+        assert_eq!(factor_semiprime(1_000_000_007), None);
     }
 }

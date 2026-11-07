@@ -1,0 +1,8 @@
+[package]
+name = "kosta-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kosta-crypto = { path = "../kosta-crypto" }
+rand = "0.8"

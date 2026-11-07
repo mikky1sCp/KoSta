@@ -187,7 +187,7 @@ ws1.close();
 const chats = await req('/api/chats', { token });
 check('chats: 200 и массив', chats.status === 200 && Array.isArray(chats.body), `status ${chats.status}`);
 
-// 9. Полный цикл переписки (если диалог уже создан через example test_client)
+// 9. Полный цикл переписки (если диалог уже создан через example mtproto_client)
 if (Array.isArray(chats.body) && chats.body.length > 0) {
   const dialogId = chats.body[0].id;
   const ws2 = await wsSession();
@@ -215,7 +215,7 @@ if (Array.isArray(chats.body) && chats.body.length > 0) {
   ws2.close();
 } else {
   console.log('  skip полный цикл: у пользователя нет диалогов');
-  console.log(`       создай его: KOSTA_PHONE=${phone} cargo run -p kosta --example test_client`);
+  console.log(`       создай его: KOSTA_PHONE=${phone} cargo run -p kosta --example mtproto_client`);
 }
 
 // 10. Новые API для UI: профиль, lookup, личные чаты, группы, read, typing

@@ -1,30 +1,34 @@
 // kosta-transport/src/tls.rs
-//! TLS-транспорт.
-//!
-//! Проверка сертификата и имени хоста включена **по умолчанию**.
-//! Флаг `allow_invalid_certs` нужен только для локальной отладки с
-//! самоподписанным сертификатом: с ним TLS перестаёт защищать от MITM.
+//! TLS-подключение клиента (проверка сертификата и имени хоста включена).
 
 use std::net::TcpStream;
+use std::time::Duration;
 
-use native_tls::{TlsAcceptor, TlsConnector, TlsStream};
+use native_tls::{TlsConnector, TlsStream};
 
 use crate::error::TransportError;
-use crate::StreamTransport;
 
-pub type TlsTransport = StreamTransport<TlsStream<TcpStream>>;
+/// «Голый» TLS-поток — нужен транспортам, которые кадрируют сами
+/// (например, MTProto-abridged).
+pub type ClientTlsStream = TlsStream<TcpStream>;
 
-/// Подключение к серверу по TLS.
+/// Устанавливает TLS-соединение и возвращает поток без обёртки-транспорта.
 ///
 /// * `domain` — имя, против которого проверяется сертификат (SNI).
 /// * `allow_invalid_certs` — **только для dev**, по умолчанию `false`.
-pub fn connect_tls(
+/// * `timeout` — таймауты чтения/записи на нижележащем TCP-сокете.
+pub fn connect_tls_stream(
     host: &str,
     port: u16,
     domain: &str,
     allow_invalid_certs: bool,
-) -> Result<TlsTransport, TransportError> {
+    timeout: Option<Duration>,
+) -> Result<ClientTlsStream, TransportError> {
     let stream = TcpStream::connect((host, port))?;
+    if let Some(timeout) = timeout {
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
+    }
 
     let mut builder = TlsConnector::builder();
     if allow_invalid_certs {
@@ -32,12 +36,5 @@ pub fn connect_tls(
         builder.danger_accept_invalid_hostnames(true);
     }
     let connector = builder.build()?;
-    let tls_stream = connector.connect(domain, stream)?;
-    Ok(StreamTransport::new(tls_stream))
-}
-
-/// Обёртка принятого TCP-соединения в серверный TLS.
-pub fn accept_tls(stream: TcpStream, acceptor: &TlsAcceptor) -> Result<TlsTransport, TransportError> {
-    let tls_stream = acceptor.accept(stream)?;
-    Ok(StreamTransport::new(tls_stream))
+    Ok(connector.connect(domain, stream)?)
 }

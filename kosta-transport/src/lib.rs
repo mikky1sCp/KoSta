@@ -1,12 +1,9 @@
 // kosta-transport/src/lib.rs
-pub mod abridged;
+//! Транспорты KoSta: MTProto-abridged кадрирование и TLS-подключение.
+//! Легаси-«abridged» (длина в байтах, без init-байта) удалён на этапе 6.
+
 pub mod error;
-pub mod mock;
-pub mod tcp;
+pub mod mtproto_abridged;
 pub mod tls;
-pub mod transport;
 
 pub use error::TransportError;
-pub use mock::MockTransport;
-pub use tcp::StreamTransport;
-pub use transport::Transport;

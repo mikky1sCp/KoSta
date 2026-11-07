@@ -1,0 +1,9 @@
+[package]
+name = "kosta-tl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[build-dependencies]
+kosta-tl-gen = { path = "../kosta-tl-gen" }

@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-kosta-core = { path = "../kosta-core" }
 kosta-crypto = { path = "../kosta-crypto" }
 kosta-transport = { path = "../kosta-transport" }
+kosta-protocol = { path = "../kosta-protocol" }
+kosta-tl = { path = "../kosta-tl" }
 
 tokio = { version = "1", features = ["full"] }
 rand = "0.8"

@@ -7,28 +7,6 @@ use std::sync::Arc;
 
 use crate::secrets::SecretsBox;
 
-// структура для полной сессии (дополнена send_seq_no и msg_id_counter)
-#[derive(Debug, Clone)]
-pub struct FullSession {
-    pub auth_key_id: i64,
-    pub user_id: i64,
-    pub server_salt: i64,
-    pub nonce: [u8; 16],
-    pub server_nonce: [u8; 16],
-    pub new_nonce: [u8; 32],
-    pub recv_seq_no: i32,
-    pub auth_key: [u8; 256],
-    pub client_write_key: [u8; 32],
-    pub client_mac_key: [u8; 32],
-    pub server_write_key: [u8; 32],
-    pub server_mac_key: [u8; 32],
-    pub last_msg_id: i64,
-    pub send_counter: u32,
-    pub recv_counter: u32,
-    pub send_seq_no: i32,
-    pub msg_id_counter: u32,
-}
-
 pub struct Database {
     pool: Pool<SqliteConnectionManager>,
     /// Мастер-ключ для шифрования секретов сессий в БД.
@@ -141,7 +119,6 @@ const CHAT_ROWS_SQL: &str = "
 /// Метаданные диалога, нужные обработчикам TL и web-API.
 #[derive(Debug, Clone)]
 pub struct DialogMeta {
-    pub id: i64,
     pub is_group: bool,
     pub title: String,
     pub participants: Vec<i64>,
@@ -175,37 +152,24 @@ fn ensure_column(
     Ok(())
 }
 
-/// Конвертирует BLOB из БД в массив фиксированной длины, возвращая ошибку
-/// вместо паники, если файл БД повреждён или подменён.
-fn blob_fixed<const N: usize>(blob: &[u8], field: &str) -> Result<[u8; N]> {
-    blob.try_into().map_err(|_| {
-        anyhow!(
-            "{}: ожидалось {} байт, а в базе {}",
-            field,
-            N,
-            blob.len()
-        )
-    })
-}
-
-/// Данные сессии для записи в таблицу `sessions`.
-/// Отдельная структура вместо 18 позиционных аргументов.
-pub struct SessionRow<'a> {
+/// Сессия MTProto 2.0: сырой `auth_key`, salt и счётчики `msg_id`/`seq_no`.
+#[derive(Debug, Clone)]
+pub struct MtprotoSessionRow {
+    /// `auth_key_id = SHA1(auth_key)[12..20]`.
+    pub auth_key_id: i64,
+    /// Пользователь (`0` — сессия ещё не прошла `signUp`).
     pub user_id: i64,
-    pub server_salt: i64,
-    pub nonce: &'a [u8; 16],
-    pub server_nonce: &'a [u8; 16],
-    pub new_nonce: &'a [u8; 32],
-    pub recv_seq_no: i32,
-    pub auth_key: &'a [u8; 256],
-    pub client_write_key: &'a [u8; 32],
-    pub client_mac_key: &'a [u8; 32],
-    pub server_write_key: &'a [u8; 32],
-    pub server_mac_key: &'a [u8; 32],
+    /// Серверный salt для `new_session_created`.
+    pub salt: i64,
+    /// Сырой 2048-битный DH-секрет (256 байт big-endian).
+    pub auth_key: [u8; 256],
+    /// Последний принятый `msg_id`.
     pub last_msg_id: i64,
-    pub send_counter: u32,
-    pub recv_counter: u32,
+    /// Последний принятый `seq_no`.
+    pub recv_seq_no: i32,
+    /// Последний отправленный `seq_no`.
     pub send_seq_no: i32,
+    /// Счётчик серверных `msg_id`.
     pub msg_id_counter: u32,
 }
 
@@ -239,27 +203,18 @@ impl Database {
                 status INTEGER NOT NULL DEFAULT 0,
                 last_seen INTEGER
             );
-            CREATE TABLE IF NOT EXISTS sessions (
+            CREATE TABLE IF NOT EXISTS mtproto_sessions (
                 auth_key_id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                server_salt INTEGER NOT NULL,
-                nonce BLOB NOT NULL,
-                server_nonce BLOB NOT NULL,
-                new_nonce BLOB NOT NULL,
-                recv_seq_no INTEGER NOT NULL DEFAULT -1,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                salt INTEGER NOT NULL,
                 auth_key BLOB NOT NULL,
-                client_write_key BLOB NOT NULL,
-                client_mac_key BLOB NOT NULL,
-                server_write_key BLOB NOT NULL,
-                server_mac_key BLOB NOT NULL,
-                created_at INTEGER NOT NULL,
                 last_msg_id INTEGER NOT NULL DEFAULT 0,
-                send_counter INTEGER NOT NULL DEFAULT 0,
-                recv_counter INTEGER NOT NULL DEFAULT 0,
+                recv_seq_no INTEGER NOT NULL DEFAULT -1,
                 send_seq_no INTEGER NOT NULL DEFAULT -1,
                 msg_id_counter INTEGER NOT NULL DEFAULT 0,
-                last_used_at INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(user_id) REFERENCES users(id)
+                protocol_version INTEGER NOT NULL DEFAULT 2,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS dialogs (
                 id INTEGER PRIMARY KEY,
@@ -310,7 +265,8 @@ impl Database {
             r"
             CREATE INDEX IF NOT EXISTS idx_messages_dialog_id ON messages(dialog_id);
             CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_mtproto_sessions_user_id ON mtproto_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_mtproto_sessions_last_used ON mtproto_sessions(last_used_at);
             CREATE INDEX IF NOT EXISTS idx_dialog_participants_user_id ON dialog_participants(user_id);
             CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_id ON auth_tokens(user_id);
             CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires_at ON auth_tokens(expires_at);
@@ -333,8 +289,6 @@ impl Database {
         ensure_column(&conn, "messages", "deleted", "INTEGER NOT NULL DEFAULT 0")?;
         // dialog_participants: роли (создатель группы — администратор)
         ensure_column(&conn, "dialog_participants", "is_admin", "INTEGER NOT NULL DEFAULT 0")?;
-        // sessions: время последнего использования (для очистки брошенных сессий)
-        ensure_column(&conn, "sessions", "last_used_at", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Для старых групп админа нет: назначаем администратором первого
         // вступившего (создателя), иначе группу нельзя будет модерировать.
@@ -347,20 +301,6 @@ impl Database {
                    WHERE dialog_id IN (SELECT id FROM dialogs WHERE type = 1)
                    GROUP BY dialog_id
                )",
-            [],
-        )?;
-
-        // У старых сессий last_used_at = 0; приравниваем к created_at,
-        // чтобы очистка не удалила их на первом же запуске.
-        conn.execute(
-            "UPDATE sessions SET last_used_at = created_at
-             WHERE last_used_at = 0 AND created_at > 0",
-            [],
-        )?;
-
-        // Индекс по last_used_at создаётся только после миграции колонки.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_last_used_at ON sessions(last_used_at)",
             [],
         )?;
 
@@ -518,102 +458,134 @@ impl Database {
         Ok(removed)
     }
 
-    // ----- Сессии -----
-    pub fn save_session_full(&self, auth_key_id: i64, row: &SessionRow<'_>) -> Result<()> {
-        // Секреты сессии больше не попадают в БД открытым текстом.
-        let sealed_auth_key = self.secrets.seal(row.auth_key)?;
-        let sealed_cwk = self.secrets.seal(row.client_write_key)?;
-        let sealed_cmk = self.secrets.seal(row.client_mac_key)?;
-        let sealed_swk = self.secrets.seal(row.server_write_key)?;
-        let sealed_smk = self.secrets.seal(row.server_mac_key)?;
+    // ----- Сессии MTProto 2.0 -----
 
+    /// Сохраняет (или перезаписывает) сессию MTProto 2.0. `auth_key`
+    /// в БД шифруется мастер-ключом, как и легаси-секреты.
+    pub fn save_mtproto_session(&self, row: &MtprotoSessionRow) -> Result<()> {
+        let sealed_auth_key = self.secrets.seal(&row.auth_key)?;
         let conn = self.get_conn()?;
         conn.execute(
-            "INSERT OR REPLACE INTO sessions
-             (auth_key_id, user_id, server_salt, nonce, server_nonce, new_nonce, recv_seq_no,
-              auth_key, client_write_key, client_mac_key, server_write_key, server_mac_key, created_at,
-              last_msg_id, send_counter, recv_counter, send_seq_no, msg_id_counter, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, strftime('%s','now'),
-                     ?13, ?14, ?15, ?16, ?17, strftime('%s','now'))",
+            "INSERT INTO mtproto_sessions
+                (auth_key_id, user_id, salt, auth_key, last_msg_id, recv_seq_no,
+                 send_seq_no, msg_id_counter, protocol_version, created_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 2,
+                     strftime('%s','now'), strftime('%s','now'))
+             ON CONFLICT(auth_key_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                salt = excluded.salt,
+                auth_key = excluded.auth_key,
+                last_msg_id = excluded.last_msg_id,
+                recv_seq_no = excluded.recv_seq_no,
+                send_seq_no = excluded.send_seq_no,
+                msg_id_counter = excluded.msg_id_counter,
+                last_used_at = strftime('%s','now')",
             rusqlite::params![
-                auth_key_id, row.user_id, row.server_salt,
-                row.nonce, row.server_nonce, row.new_nonce,
-                row.recv_seq_no,
+                row.auth_key_id,
+                row.user_id,
+                row.salt,
                 sealed_auth_key,
-                sealed_cwk, sealed_cmk,
-                sealed_swk, sealed_smk,
-                row.last_msg_id, row.send_counter, row.recv_counter,
-                row.send_seq_no, row.msg_id_counter,
+                row.last_msg_id,
+                row.recv_seq_no,
+                row.send_seq_no,
+                row.msg_id_counter,
             ],
         )?;
         Ok(())
     }
 
-    /// user_id сессии (для проверки авторизации).
-    pub fn get_session_user_id(&self, auth_key_id: i64) -> Result<Option<i64>> {
+    /// Загружает сессию MTProto 2.0 по `auth_key_id`.
+    pub fn load_mtproto_session(&self, auth_key_id: i64) -> Result<Option<MtprotoSessionRow>> {
         let conn = self.get_conn()?;
-        let user_id = conn
+        let mut stmt = conn.prepare(
+            "SELECT auth_key_id, user_id, salt, auth_key, last_msg_id, recv_seq_no,
+                    send_seq_no, msg_id_counter
+             FROM mtproto_sessions WHERE auth_key_id = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![auth_key_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let sealed: Vec<u8> = row.get(3)?;
+        let auth_key = self.secrets.open_fixed::<256>(&sealed)?;
+        Ok(Some(MtprotoSessionRow {
+            auth_key_id: row.get(0)?,
+            user_id: row.get(1)?,
+            salt: row.get(2)?,
+            auth_key,
+            last_msg_id: row.get(4)?,
+            recv_seq_no: row.get(5)?,
+            send_seq_no: row.get(6)?,
+            msg_id_counter: row.get(7)?,
+        }))
+    }
+
+    /// `auth_key_id` последней MTProto 2.0 сессии пользователя (для web-справки).
+    pub fn get_mtproto_auth_key_id_for_user(&self, user_id: i64) -> Result<Option<i64>> {
+        let conn = self.get_conn()?;
+        let auth_key_id = conn
             .query_row(
-                "SELECT user_id FROM sessions WHERE auth_key_id = ?1",
-                rusqlite::params![auth_key_id],
+                "SELECT auth_key_id FROM mtproto_sessions
+                 WHERE user_id = ?1 ORDER BY last_used_at DESC LIMIT 1",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(user_id)
+        Ok(auth_key_id)
     }
 
-    /// Удаляет брошенные сессии: незавершённые рукопожатия (user_id = 0)
-    /// и сессии, не использованные дольше `idle_secs`.
-    /// Возвращает число удалённых строк.
-    pub fn purge_stale_sessions(&self, anonymous_idle_secs: i64, idle_secs: i64) -> Result<usize> {
-        let conn = self.get_conn()?;
-        let now = now_secs();
-        let removed = conn.execute(
-            "DELETE FROM sessions
-             WHERE (user_id = 0 AND last_used_at < ?1)
-                OR last_used_at < ?2",
-            rusqlite::params![now - anonymous_idle_secs, now - idle_secs],
-        )?;
-        Ok(removed)
-    }
-
-    pub fn update_session_user_id(&self, auth_key_id: i64, user_id: i64) -> Result<()> {
+    /// Привязывает сессию к пользователю после `signUp`.
+    pub fn update_mtproto_session_user_id(&self, auth_key_id: i64, user_id: i64) -> Result<()> {
         let conn = self.get_conn()?;
         conn.execute(
-            "UPDATE sessions SET user_id = ?1 WHERE auth_key_id = ?2",
+            "UPDATE mtproto_sessions SET user_id = ?1, last_used_at = strftime('%s','now')
+             WHERE auth_key_id = ?2",
             rusqlite::params![user_id, auth_key_id],
         )?;
         Ok(())
     }
 
-    pub fn get_full_session(&self, auth_key_id: i64) -> Result<Option<FullSession>> {
+    /// Сохраняет счётчики `msg_id`/`seq_no` (вызывается не на каждый кадр).
+    pub fn save_mtproto_session_state(
+        &self,
+        auth_key_id: i64,
+        last_msg_id: i64,
+        recv_seq_no: i32,
+        send_seq_no: i32,
+        msg_id_counter: u32,
+    ) -> Result<()> {
         let conn = self.get_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT auth_key_id, user_id, server_salt, nonce, server_nonce, new_nonce, recv_seq_no,
-                    auth_key, client_write_key, client_mac_key, server_write_key, server_mac_key,
-                    last_msg_id, send_counter, recv_counter, send_seq_no, msg_id_counter
-             FROM sessions WHERE auth_key_id = ?1"
+        conn.execute(
+            "UPDATE mtproto_sessions
+             SET last_msg_id = ?1, recv_seq_no = ?2, send_seq_no = ?3,
+                 msg_id_counter = ?4, last_used_at = strftime('%s','now')
+             WHERE auth_key_id = ?5",
+            rusqlite::params![
+                last_msg_id,
+                recv_seq_no,
+                send_seq_no,
+                msg_id_counter,
+                auth_key_id
+            ],
         )?;
-        let mut rows = stmt.query(rusqlite::params![auth_key_id])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(full_session_from_row(row, &self.secrets)?)),
-            None => Ok(None),
-        }
+        Ok(())
     }
 
-    pub fn get_full_session_for_user(&self, user_id: i64) -> Result<Option<FullSession>> {
+    /// Удаляет брошенные сессии MTProto 2.0 (анонимные и давно неиспользуемые).
+    pub fn purge_stale_mtproto_sessions(
+        &self,
+        anonymous_idle_secs: i64,
+        idle_secs: i64,
+    ) -> Result<usize> {
         let conn = self.get_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT auth_key_id, user_id, server_salt, nonce, server_nonce, new_nonce, recv_seq_no,
-                    auth_key, client_write_key, client_mac_key, server_write_key, server_mac_key,
-                    last_msg_id, send_counter, recv_counter, send_seq_no, msg_id_counter
-             FROM sessions WHERE user_id = ?1 ORDER BY last_used_at DESC LIMIT 1"
+        let now = now_secs();
+        let removed = conn.execute(
+            "DELETE FROM mtproto_sessions
+             WHERE (user_id = 0 AND last_used_at < ?1)
+                OR last_used_at < ?2",
+            rusqlite::params![now - anonymous_idle_secs, now - idle_secs],
         )?;
-        let mut rows = stmt.query(rusqlite::params![user_id])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(full_session_from_row(row, &self.secrets)?)),
-            None => Ok(None),
-        }
+        Ok(removed)
     }
 
     // ===== ДИАЛОГИ =====
@@ -783,7 +755,6 @@ impl Database {
         let is_group = typ == 1;
         let title = dialog_title(is_group, &raw_title, other_phone.as_deref(), dialog_id);
         Ok(Some(DialogMeta {
-            id: dialog_id,
             is_group,
             title,
             participants,
@@ -1228,49 +1199,6 @@ fn chat_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
     })
 }
 
-/// Собирает `FullSession` из строки `sessions` с понятными ошибками
-/// вместо `copy_from_slice`-паник на повреждённой БД.
-fn full_session_from_row(row: &rusqlite::Row<'_>, secrets: &SecretsBox) -> Result<FullSession> {
-    let auth_key_id: i64 = row.get(0)?;
-    let user_id: i64 = row.get(1)?;
-    let server_salt: i64 = row.get(2)?;
-    let nonce: Vec<u8> = row.get(3)?;
-    let server_nonce: Vec<u8> = row.get(4)?;
-    let new_nonce: Vec<u8> = row.get(5)?;
-    let recv_seq_no: i32 = row.get(6)?;
-    let auth_key: Vec<u8> = row.get(7)?;
-    let client_write_key: Vec<u8> = row.get(8)?;
-    let client_mac_key: Vec<u8> = row.get(9)?;
-    let server_write_key: Vec<u8> = row.get(10)?;
-    let server_mac_key: Vec<u8> = row.get(11)?;
-    let last_msg_id: i64 = row.get(12)?;
-    let send_counter: i64 = row.get(13)?;
-    let recv_counter: i64 = row.get(14)?;
-    let send_seq_no: i32 = row.get(15)?;
-    let msg_id_counter: i64 = row.get(16)?;
-
-    Ok(FullSession {
-        auth_key_id,
-        user_id,
-        server_salt,
-        nonce: blob_fixed(&nonce, "sessions.nonce")?,
-        server_nonce: blob_fixed(&server_nonce, "sessions.server_nonce")?,
-        new_nonce: blob_fixed(&new_nonce, "sessions.new_nonce")?,
-        recv_seq_no,
-        // Секреты расшифровываются мастер-ключом; легаси-записи читаются как есть.
-        auth_key: secrets.open_fixed(&auth_key)?,
-        client_write_key: secrets.open_fixed(&client_write_key)?,
-        client_mac_key: secrets.open_fixed(&client_mac_key)?,
-        server_write_key: secrets.open_fixed(&server_write_key)?,
-        server_mac_key: secrets.open_fixed(&server_mac_key)?,
-        last_msg_id,
-        send_counter: send_counter as u32,
-        recv_counter: recv_counter as u32,
-        send_seq_no,
-        msg_id_counter: msg_id_counter as u32,
-    })
-}
-
 /// Текущее время в unix-секундах.
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -1373,84 +1301,6 @@ mod tests {
     }
 
     #[test]
-    fn session_secrets_are_encrypted_at_rest() {
-        let t = TempDb::new();
-        let user_id = t.db.create_user("+1003", "pass").unwrap();
-
-        let auth_key = [0xABu8; 256];
-        let client_write_key = [0xCDu8; 32];
-        t.db.save_session_full(
-            12345,
-            &SessionRow {
-                user_id,
-                server_salt: 0,
-                nonce: &[1u8; 16],
-                server_nonce: &[2u8; 16],
-                new_nonce: &[3u8; 32],
-                recv_seq_no: -1,
-                auth_key: &auth_key,
-                client_write_key: &client_write_key,
-                client_mac_key: &[5u8; 32],
-                server_write_key: &[6u8; 32],
-                server_mac_key: &[7u8; 32],
-                last_msg_id: 0,
-                send_counter: 0,
-                recv_counter: 0,
-                send_seq_no: -1,
-                msg_id_counter: 0,
-            },
-        )
-        .unwrap();
-
-        // В файле БД не должно быть ключей открытым текстом.
-        // WAL держит свежие страницы в отдельном файле — сначала checkpoint.
-        t.db.get_conn()
-            .unwrap()
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-            .unwrap();
-        let raw = std::fs::read(&t.path).unwrap();
-        let has_long_run = |byte: u8| raw.windows(32).any(|w| w.iter().all(|&b| b == byte));
-        assert!(!has_long_run(0xAB), "auth_key лежит в БД открытым текстом");
-        assert!(
-            !has_long_run(0xCD),
-            "write-ключ лежит в БД открытым текстом"
-        );
-
-        // При этом сессия читается обратно без потерь
-        let session = t.db.get_full_session(12345).unwrap().unwrap();
-        assert_eq!(session.auth_key, auth_key);
-        assert_eq!(session.client_write_key, client_write_key);
-        assert_eq!(session.user_id, user_id);
-        assert_eq!(t.db.get_session_user_id(12345).unwrap(), Some(user_id));
-    }
-
-    /// Сохранение тестовой сессии с минимальной обвязкой.
-    fn save_test_session(db: &Database, auth_key_id: i64, user_id: i64) {
-        db.save_session_full(
-            auth_key_id,
-            &SessionRow {
-                user_id,
-                server_salt: 0,
-                nonce: &[1u8; 16],
-                server_nonce: &[2u8; 16],
-                new_nonce: &[3u8; 32],
-                recv_seq_no: -1,
-                auth_key: &[0xAAu8; 256],
-                client_write_key: &[0xBBu8; 32],
-                client_mac_key: &[0xCCu8; 32],
-                server_write_key: &[0xDDu8; 32],
-                server_mac_key: &[0xEEu8; 32],
-                last_msg_id: 0,
-                send_counter: 0,
-                recv_counter: 0,
-                send_seq_no: -1,
-                msg_id_counter: 0,
-            },
-        )
-        .unwrap();
-    }
-
-    #[test]
     fn foreign_keys_are_enforced() {
         let t = TempDb::new();
         let user_id = t.db.create_user("+2000", "pass").unwrap();
@@ -1545,38 +1395,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_sessions_are_purged() {
-        let t = TempDb::new();
-        let user_id = t.db.create_user("+2008", "pass").unwrap();
-        save_test_session(&t.db, 1, user_id);
-        save_test_session(&t.db, 2, 0); // брошенное рукопожатие без SignUp
-
-        // Пользовательская сессия не использовалась 90 000 секунд (> суток),
-        // анонимное рукопожатие — 2 часа (> часа).
-        t.db.get_conn()
-            .unwrap()
-            .execute(
-                "UPDATE sessions SET last_used_at = CASE auth_key_id
-                     WHEN 1 THEN ?1
-                     ELSE ?2
-                 END",
-                rusqlite::params![now_secs() - 90_000, now_secs() - 7200],
-            )
-            .unwrap();
-
-        // user_id = 0 чистятся через час, пользовательские сессии — через сутки.
-        let removed = t.db.purge_stale_sessions(3600, 86_400).unwrap();
-        assert_eq!(removed, 2);
-        assert!(t.db.get_full_session(1).unwrap().is_none());
-        assert!(t.db.get_full_session(2).unwrap().is_none());
-
-        // Свежая анонимная сессия суточную очистку переживает.
-        save_test_session(&t.db, 3, 0);
-        let removed = t.db.purge_stale_sessions(3600, 86_400).unwrap();
-        assert_eq!(removed, 0, "сессия, использованная только что, не удаляется");
-    }
-
-    #[test]
     fn duplicate_registration_is_an_error_not_a_panic() {
         let t = TempDb::new();
         let id = t.db.create_user("+2009", "pass").unwrap();
@@ -1600,15 +1418,6 @@ mod tests {
                 CREATE TABLE users (id INTEGER PRIMARY KEY, phone TEXT UNIQUE NOT NULL,
                                     password_hash TEXT NOT NULL, status INTEGER NOT NULL DEFAULT 0,
                                     last_seen INTEGER);
-                CREATE TABLE sessions (auth_key_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
-                    server_salt INTEGER NOT NULL, nonce BLOB NOT NULL, server_nonce BLOB NOT NULL,
-                    new_nonce BLOB NOT NULL, recv_seq_no INTEGER NOT NULL DEFAULT -1,
-                    auth_key BLOB NOT NULL, client_write_key BLOB NOT NULL,
-                    client_mac_key BLOB NOT NULL, server_write_key BLOB NOT NULL,
-                    server_mac_key BLOB NOT NULL, created_at INTEGER NOT NULL,
-                    last_msg_id INTEGER NOT NULL DEFAULT 0, send_counter INTEGER NOT NULL DEFAULT 0,
-                    recv_counter INTEGER NOT NULL DEFAULT 0, send_seq_no INTEGER NOT NULL DEFAULT -1,
-                    msg_id_counter INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE dialogs (id INTEGER PRIMARY KEY, type INTEGER NOT NULL,
                     title TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
                 CREATE TABLE dialog_participants (dialog_id INTEGER, user_id INTEGER,
@@ -1623,11 +1432,6 @@ mod tests {
                 INSERT INTO dialogs (id, type, title, created_at) VALUES (10, 1, 'Old group', 0);
                 INSERT INTO dialog_participants (dialog_id, user_id, joined_at) VALUES (10, 1, 100);
                 INSERT INTO dialog_participants (dialog_id, user_id, joined_at) VALUES (10, 2, 200);
-                INSERT INTO sessions (auth_key_id, user_id, server_salt, nonce, server_nonce,
-                    new_nonce, auth_key, client_write_key, client_mac_key, server_write_key,
-                    server_mac_key, created_at) VALUES (7, 1, 0, zeroblob(16), zeroblob(16),
-                    zeroblob(32), zeroblob(256), zeroblob(32), zeroblob(32), zeroblob(32),
-                    zeroblob(32), 123);
                 ",
             )
             .unwrap();
@@ -1638,19 +1442,6 @@ mod tests {
         // Первый вступивший в старую группу становится админом.
         assert!(db.is_dialog_admin(10, 1).unwrap());
         assert!(!db.is_dialog_admin(10, 2).unwrap());
-        // last_used_at заполнен из created_at (123), поэтому старая сессия
-        // не должна остаться с нулём и переживает миграцию как «не использованная
-        // только что» — но суточная очистка её всё равно удалит.
-        let last_used: i64 = db
-            .get_conn()
-            .unwrap()
-            .query_row(
-                "SELECT last_used_at FROM sessions WHERE auth_key_id = 7",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(last_used, 123, "last_used_at должен быть заполнен из created_at");
         // Media-колонки добавляются в старую БД, и через них уже можно
         // сохранять/читать медиа-сообщение.
         let media_id = db
@@ -1672,8 +1463,6 @@ mod tests {
                 .media_key,
             "10/0123456789abcdef0123456789abcdef.png"
         );
-        let removed = db.purge_stale_sessions(3600, 30 * 86_400).unwrap();
-        assert_eq!(removed, 1, "очень старая сессия удаляется очисткой");
         drop(db);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));

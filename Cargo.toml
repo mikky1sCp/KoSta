@@ -1,7 +1,9 @@
 [workspace]
 members = [
-    "kosta-core",
     "kosta-crypto",
+    "kosta-protocol",
+    "kosta-tl",
+    "kosta-tl-gen",
     "kosta-transport",
     "kosta",
     "kosta-server",

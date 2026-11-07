@@ -8,7 +8,6 @@ pub enum KostaError {
     Io(std::io::Error),
     Transport(kosta_transport::TransportError),
     Crypto(kosta_crypto::CryptoError),
-    Core(kosta_core::Error),
     Protocol(String),
     ConnectionFailed(String),
 }
@@ -39,8 +38,14 @@ impl From<kosta_crypto::CryptoError> for KostaError {
     }
 }
 
-impl From<kosta_core::Error> for KostaError {
-    fn from(e: kosta_core::Error) -> Self {
-        KostaError::Core(e)
+impl From<kosta_protocol::ProtocolError> for KostaError {
+    fn from(e: kosta_protocol::ProtocolError) -> Self {
+        KostaError::Protocol(format!("{e}"))
+    }
+}
+
+impl From<kosta_tl::TlError> for KostaError {
+    fn from(e: kosta_tl::TlError) -> Self {
+        KostaError::Protocol(format!("{e}"))
     }
 }

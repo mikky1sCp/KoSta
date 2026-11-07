@@ -1,0 +1,6 @@
+[package]
+name = "kosta-tl-gen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

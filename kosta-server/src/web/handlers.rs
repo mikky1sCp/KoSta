@@ -262,12 +262,8 @@ pub async fn login(
         Err(e) => return Ok(server_error("failed to issue token", e)),
     };
 
-    // auth_key_id нужен только как справка о существующей KoSta-сессии.
-    let auth_key_id = db
-        .get_full_session_for_user(user_id)
-        .ok()
-        .flatten()
-        .map(|session| session.auth_key_id);
+    // auth_key_id нужен только как справка о существующей MTProto 2.0-сессии.
+    let auth_key_id = db.get_mtproto_auth_key_id_for_user(user_id).ok().flatten();
 
     Ok(HttpResponse::Ok().json(LoginResponse {
         success: true,

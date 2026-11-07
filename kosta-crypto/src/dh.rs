@@ -36,6 +36,21 @@ pub fn compute_shared_secret(peer_public: &BigUint, private: &BigUint, p: &BigUi
     peer_public.modpow(private, p)
 }
 
+/// Общий секрет DH как `auth_key` MTProto: ровно 256 байт big-endian.
+///
+/// `BigUint::to_bytes_be` не дописывает ведущие нули, а MTProto требует
+/// фиксированные 2048 бит — поэтому значение выравнивается слева нулями.
+pub fn shared_secret_bytes(secret: &BigUint) -> [u8; 256] {
+    let bytes = secret.to_bytes_be();
+    let mut out = [0u8; 256];
+    if bytes.len() >= 256 {
+        out.copy_from_slice(&bytes[bytes.len() - 256..]);
+    } else {
+        out[256 - bytes.len()..].copy_from_slice(&bytes);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +79,19 @@ mod tests {
             compute_shared_secret(&pub_b, &a, &p),
             compute_shared_secret(&pub_a, &b, &p)
         );
+    }
+
+    #[test]
+    fn shared_secret_bytes_are_left_padded() {
+        let small = BigUint::from(0x0102u32);
+        let bytes = shared_secret_bytes(&small);
+        assert_eq!(bytes.len(), 256);
+        assert_eq!(&bytes[254..], &[0x01, 0x02]);
+        assert!(bytes[..254].iter().all(|b| *b == 0));
+
+        let full = (BigUint::from(1u32) << 2040u32) + BigUint::from(7u32);
+        let bytes = shared_secret_bytes(&full);
+        assert_eq!(bytes[0], 0x01);
+        assert_eq!(bytes[255], 0x07);
     }
 }

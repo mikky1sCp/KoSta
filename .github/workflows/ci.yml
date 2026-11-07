@@ -60,7 +60,7 @@ jobs:
         run: npm run build
 
   e2e:
-    name: Protocol and web smoke
+    name: MTProto 2.0 and web smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,8 +103,8 @@ jobs:
           cat server.log
           exit 1
 
-      - name: TCP protocol e2e (handshake, dialog, message, history)
-        run: KOSTA_PHONE=+79990000001 ./target/debug/examples/test_client
+      - name: MTProto 2.0 e2e (handshake, signUp, dialog, message, history)
+        run: KOSTA_PHONE=+79990000001 ./target/debug/examples/mtproto_client
 
       - name: Web API and WebSocket smoke
         run: node scripts/smoke.mjs --phone=+79990000001
@@ -112,10 +112,10 @@ jobs:
       - name: UI is served
         run: curl -sf http://127.0.0.1:8081/ | grep -q "KoSta"
 
-      - name: TL parser garbage resistance
+      - name: MTProto garbage resistance
         run: node scripts/tl-garbage.mjs
 
-      - name: Server limits
+      - name: MTProto server limits
         run: node scripts/limits.mjs
 
       - name: Server log

@@ -4,12 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-kosta-core = { path = "../kosta-core" }
 aes = "0.8"
-ctr = "0.9"
-hmac = "0.12"
 sha2 = "0.10"
-hkdf = "0.12"
 rand = "0.8"
 subtle = "2.4"
 sha1 = "0.10"

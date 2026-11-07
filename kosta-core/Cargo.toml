@@ -1,6 +1,0 @@
-[package]
-name = "kosta-core"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
