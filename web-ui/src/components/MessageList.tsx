@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronUp, MessageSquare } from 'lucide-react';
+import { ChevronDown, ChevronUp, MessageSquare } from 'lucide-react';
 import type { Api } from '../api';
 import type { Participant, UiMessage } from '../types';
 import { MessageBubble } from './MessageBubble';
@@ -9,6 +9,16 @@ import { cn } from '../utils/classNames';
 
 const GROUP_WINDOW_SECONDS = 5 * 60;
 const NEAR_BOTTOM_PX = 120;
+
+// Устойчивые цвета имён участников в группах (привязаны к sender_id).
+const SENDER_COLORS = [
+  '#e08e52',
+  '#c58f3c',
+  '#5f9e77',
+  '#5e8fb4',
+  '#c47d9a',
+  '#9a7bbf',
+];
 
 interface MessageListProps {
   chatId: number;
@@ -20,9 +30,12 @@ interface MessageListProps {
   isGroup: boolean;
   participants: Participant[];
   api: Api;
+  /** id первого сообщения из непрочитанного блока: над ним рисуем разделитель. */
+  unreadDividerMessageId: number | null;
   onLoadMore: () => Promise<boolean>;
   onOpenImage: (message: UiMessage, url: string) => void;
   onDownload: (message: UiMessage) => Promise<void>;
+  onCopyMessage: (message: UiMessage) => void;
 }
 
 function MessagesSkeleton() {
@@ -55,9 +68,11 @@ export function MessageList({
   isGroup,
   participants,
   api,
+  unreadDividerMessageId,
   onLoadMore,
   onOpenImage,
   onDownload,
+  onCopyMessage,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -66,7 +81,12 @@ export function MessageList({
   const restoreRef = useRef<{ height: number; top: number; firstId: number } | null>(
     null,
   );
+  const newBelowRef = useRef(0);
   const [restoring, setRestoring] = useState(false);
+  const [showJump, setShowJump] = useState(false);
+  const [newBelow, setNewBelow] = useState(0);
+  // Указываем «есть более ранние сообщения» мягкой тенью сверху, когда ушли вниз.
+  const [atTop, setAtTop] = useState(false);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -101,6 +121,15 @@ export function MessageList({
     if (shouldStick) {
       element.scrollTop = element.scrollHeight;
       nearBottomRef.current = true;
+      newBelowRef.current = 0;
+      setNewBelow(0);
+      setShowJump(false);
+    } else if (lastChanged && !restoreRef.current && lastMessage) {
+      // Новое сообщение, пока пользователь прокрутил ленту вверх:
+      // копим счётчик на кнопке «вниз».
+      newBelowRef.current += 1;
+      setNewBelow(newBelowRef.current);
+      setShowJump(true);
     }
   }, [messages, loading, chatId, restoring]);
 
@@ -110,7 +139,28 @@ export function MessageList({
       return;
     }
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    nearBottomRef.current = distance < NEAR_BOTTOM_PX;
+    const nearBottom = distance < NEAR_BOTTOM_PX;
+    const top = element.scrollTop <= 2;
+    nearBottomRef.current = nearBottom;
+    setShowJump(!nearBottom);
+    setAtTop(top);
+    if (nearBottom && newBelowRef.current > 0) {
+      newBelowRef.current = 0;
+      setNewBelow(0);
+    }
+  }
+
+  function handleJumpToBottom() {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    nearBottomRef.current = true;
+    setAtTop(false);
+    newBelowRef.current = 0;
+    setNewBelow(0);
+    setShowJump(false);
   }
 
   async function handleLoadMoreClick() {
@@ -146,7 +196,7 @@ export function MessageList({
       previousMessage = null;
       items.push(
         <div key={`day-${messageDay}`} className="my-3 flex justify-center">
-          <span className="rounded-full border border-line bg-panel-soft px-3 py-1 text-[11px] font-medium text-muted">
+          <span className="rounded-full border border-line-soft bg-panel-soft/80 px-2.5 py-1 text-[11px] text-muted">
             {formatDayLabel(message.timestamp)}
           </span>
         </div>,
@@ -170,6 +220,24 @@ export function MessageList({
       participants.find((participant) => participant.user_id === message.sender_id)
         ?.phone ?? null;
 
+    if (
+      unreadDividerMessageId !== null &&
+      message.id === unreadDividerMessageId
+    ) {
+      items.push(
+        <div
+          key={`unread-${message.id}`}
+          role="separator"
+          aria-label="Непрочитанные сообщения"
+          className="my-3 flex justify-center"
+        >
+          <span className="rounded-full bg-accent-soft px-3 py-1 text-[11px] font-semibold text-accent-strong ring-1 ring-accent/25">
+            Непрочитанные сообщения
+          </span>
+        </div>,
+      );
+    }
+
     items.push(
       <MessageBubble
         key={message.id}
@@ -178,10 +246,16 @@ export function MessageList({
         inGroup={isGroup}
         showSender={!groupedWithPrevious}
         senderPhone={senderPhone}
+        senderColor={
+          isGroup && !message.is_outgoing
+            ? SENDER_COLORS[message.sender_id % SENDER_COLORS.length]
+            : undefined
+        }
         tail={!groupedWithNext}
         api={api}
         onOpenImage={onOpenImage}
         onDownload={onDownload}
+        onCopyMessage={onCopyMessage}
       />,
     );
 
@@ -191,14 +265,15 @@ export function MessageList({
   const showEmpty = !loading && messages.length === 0;
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      className="kosta-scroll min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6"
-      aria-live="polite"
-      aria-label="История сообщений"
-    >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-1">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="chat-wallpaper kosta-scroll min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6"
+        aria-live="polite"
+        aria-label="История сообщений"
+      >
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-1">
         {loading ? (
           <MessagesSkeleton />
         ) : (
@@ -223,11 +298,14 @@ export function MessageList({
 
             {showEmpty ? (
               <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-                <span className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-panel-soft text-muted">
+                <span className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-accent-strong">
                   <MessageSquare className="h-6 w-6" aria-hidden="true" />
                 </span>
                 <p className="text-sm font-medium text-ink">Сообщений пока нет</p>
-                <p className="mt-1 text-xs text-muted">Напишите первым — начните диалог</p>
+                <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted">
+                  Напишите первым — начните диалог. Или прикрепите файл через
+                  скрепку рядом с полем ввода.
+                </p>
               </div>
             ) : (
               items
@@ -253,7 +331,38 @@ export function MessageList({
             )}
           </>
         )}
+        </div>
       </div>
+
+      {/* Мягкая тень сверху — подсказка, что выше есть история. */}
+      <div
+        aria-hidden="true"
+        className={cn(
+          'pointer-events-none absolute inset-x-0 top-0 z-[5] h-5 bg-gradient-to-b from-black/20 to-transparent transition-opacity duration-200',
+          atTop ? 'opacity-0' : 'opacity-100',
+        )}
+      />
+
+      {showJump && (
+        <button
+          type="button"
+          onClick={handleJumpToBottom}
+          aria-label="К последнему сообщению"
+          title="К последнему сообщению"
+          className="animate-fade-in-up absolute bottom-4 right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-line bg-panel-strong text-ink shadow-md transition-colors hover:bg-panel-strong hover:text-accent-strong"
+        >
+          <ChevronDown className="h-5 w-5" aria-hidden="true" />
+          {newBelow > 0 && (
+            <span
+              className="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-none text-white"
+              role="status"
+              aria-label={`Новых сообщений: ${newBelow}`}
+            >
+              {newBelow > 99 ? '99+' : newBelow}
+            </span>
+          )}
+        </button>
+      )}
     </div>
   );
 }

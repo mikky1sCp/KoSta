@@ -40,7 +40,7 @@ export function ChatHeader({
   }
 
   return (
-    <header className="flex items-center gap-3 border-b border-line bg-panel/70 px-3 py-3 backdrop-blur md:px-5">
+    <header className="flex items-center gap-3 border-b border-line bg-panel px-3 py-3 md:px-5">
       <button
         type="button"
         onClick={onBack}
@@ -58,7 +58,7 @@ export function ChatHeader({
       />
 
       <div className="min-w-0 flex-1">
-        <h2 className="truncate text-sm font-semibold text-ink md:text-base">
+        <h2 className="truncate text-sm font-semibold tracking-tight text-ink md:text-base">
           {chat.title}
         </h2>
         <p

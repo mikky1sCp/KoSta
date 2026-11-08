@@ -25,12 +25,29 @@ const ICON_CLASS: Record<AvatarSize, string> = {
   xl: 'h-8 w-8',
 };
 
+const INITIAL_CLASS: Record<AvatarSize, string> = {
+  sm: 'text-sm',
+  md: 'text-lg',
+  lg: 'text-xl',
+  xl: 'text-2xl',
+};
+
 function hashString(value: string): number {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return hash;
+}
+
+/** Первая буква названия группы — человеческий штрих вместо иконки-заглушки. */
+function groupInitial(title: string): string {
+  const first = title.trim().charAt(0);
+  // Показываем только настоящую букву; эмодзи/символы — фолбэк на иконку.
+  if (first.length > 0 && /^\p{L}$/u.test(first)) {
+    return first.toLocaleUpperCase('ru-RU');
+  }
+  return '';
 }
 
 interface AvatarProps {
@@ -41,7 +58,10 @@ interface AvatarProps {
   className?: string;
 }
 
-/** Аватар чата: градиент выбирается детерминированно по названию. */
+/**
+ * Аватар чата: фон выбирается детерминированно по названию, у групп — из
+ * инициалов, у личных чатов — пиктограмма «человек».
+ */
 export function Avatar({
   title,
   isGroup,
@@ -50,10 +70,12 @@ export function Avatar({
   className,
 }: AvatarProps) {
   const gradient = GRADIENTS[hashString(title) % GRADIENTS.length];
+  const initial = groupInitial(title);
+
   return (
     <span
       className={cn(
-        'relative inline-flex shrink-0 items-center justify-center text-white shadow-sm',
+        'relative inline-flex shrink-0 select-none items-center justify-center border border-black/10 font-semibold text-white shadow-sm',
         SIZE_CLASS[size],
         gradient,
         className,
@@ -61,12 +83,18 @@ export function Avatar({
       aria-hidden="true"
     >
       {isGroup ? (
-        <UsersRound className={ICON_CLASS[size]} strokeWidth={2.1} />
+        initial.length > 0 ? (
+          <span className={cn('leading-none', INITIAL_CLASS[size])}>
+            {initial}
+          </span>
+        ) : (
+          <UsersRound className={ICON_CLASS[size]} strokeWidth={2.1} />
+        )
       ) : (
         <UserRound className={ICON_CLASS[size]} strokeWidth={2.1} />
       )}
       {online && (
-        <span className="status-dot-online absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-panel bg-online" />
+        <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-panel bg-online" />
       )}
     </span>
   );

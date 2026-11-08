@@ -72,10 +72,12 @@ export function AuthScreen({ loading, error, onSubmit }: AuthScreenProps) {
     <div className="app-shell flex min-h-[100dvh] w-full items-center justify-center px-4 py-8">
       <div className="animate-fade-in-up w-full max-w-md">
         <div className="mb-6 flex flex-col items-center text-center">
-          <span className="logo-glow mb-4 flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-indigo-500 via-indigo-500 to-violet-600 text-white">
+          <span className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-accent text-white">
             <MessageCircle className="h-8 w-8" strokeWidth={2.2} aria-hidden="true" />
           </span>
-          <h1 className="brand-text text-3xl font-bold tracking-tight">KoSta</h1>
+          <h1 className="brand-text text-3xl font-bold tracking-tight">
+            KoSta<span className="text-accent">.</span>
+          </h1>
           <p className="mt-1 text-sm text-muted">
             {isRegister
               ? 'Создайте аккаунт и начните общаться'
@@ -83,7 +85,7 @@ export function AuthScreen({ loading, error, onSubmit }: AuthScreenProps) {
           </p>
         </div>
 
-        <div className="rounded-3xl border border-line bg-panel/85 p-6 shadow-2xl backdrop-blur-xl sm:p-8">
+        <div className="rounded-3xl border border-line bg-panel p-6 shadow-lg sm:p-8">
           <div
             role="tablist"
             aria-label="Вход или регистрация"

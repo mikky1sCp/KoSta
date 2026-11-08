@@ -1,57 +1,53 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
- * Палитра KoSta: неоново-тёмная по умолчанию, светлая — через класс `light`
- * на <html>. Все токены пробрасываются в утилиты Tailwind через @theme inline.
+ * Палитра KoSta: тёплый минимализм. Тёмная по умолчанию, светлая — через класс
+ * `light` на <html>. Все токены пробрасываются в утилиты Tailwind через @theme
+ * inline. Без градиентов, свечения и «стекла»: сплошные тёплые поверхности,
+ * волосяные границы и один терракотовый акцент для интерактива и своих пузырей.
  * ------------------------------------------------------------------------- */
 :root {
   color-scheme: dark;
 
-  --app: #080a12;
-  --panel: #0f1320;
-  --panel-soft: #141a2a;
-  --panel-strong: #1b2134;
-  --line: #242c42;
-  --line-soft: #1b2133;
-  --ink: #e8ebf5;
-  --muted: #8b93ab;
-  --accent: #6366f1;
-  --accent-strong: #818cf8;
-  --accent-soft: color-mix(in srgb, #6366f1 18%, transparent);
-  --online: #34d399;
-  --danger: #f87171;
-  --warn: #fbbf24;
-  --bubble-in: #171d2e;
-  --bubble-out-1: #4f46e5;
-  --bubble-out-2: #7c3aed;
-  --overlay: rgba(3, 5, 12, 0.72);
-  --scroll: #2e364f;
-  --glow: rgba(99, 102, 241, 0.3);
+  --app: #1a1b1d;
+  --panel: #212327;
+  --panel-soft: #27292e;
+  --panel-strong: #303238;
+  --line: #393b41;
+  --line-soft: #2d2f34;
+  --ink: #f1efe9;
+  --muted: #a2a29c;
+  --accent: #cf5a4e;
+  --accent-strong: #e47c6e;
+  --accent-soft: color-mix(in srgb, #cf5a4e 14%, transparent);
+  --online: #4fad83;
+  --danger: #e06060;
+  --warn: #d99a33;
+  --bubble-in: #27292e;
+  --overlay: rgba(18, 17, 15, 0.66);
+  --scroll: #3d3f46;
 }
 
 html.light {
   color-scheme: light;
 
-  --app: #eef1f7;
+  --app: #f2efe8;
   --panel: #ffffff;
-  --panel-soft: #f5f7fb;
-  --panel-strong: #e9edf6;
-  --line: #dce2ee;
-  --line-soft: #e7ebf3;
-  --ink: #0f172a;
-  --muted: #64748b;
-  --accent: #4f46e5;
-  --accent-strong: #4338ca;
-  --accent-soft: color-mix(in srgb, #4f46e5 12%, transparent);
-  --online: #10b981;
-  --danger: #dc2626;
-  --warn: #d97706;
+  --panel-soft: #f6f3ec;
+  --panel-strong: #ece7dd;
+  --line: #e0dbd0;
+  --line-soft: #eae5da;
+  --ink: #2a2722;
+  --muted: #807b71;
+  --accent: #c2503f;
+  --accent-strong: #a63a2d;
+  --accent-soft: color-mix(in srgb, #c2503f 11%, transparent);
+  --online: #3e9c72;
+  --danger: #c9413a;
+  --warn: #b57b1a;
   --bubble-in: #ffffff;
-  --bubble-out-1: #4f46e5;
-  --bubble-out-2: #6d28d9;
-  --overlay: rgba(15, 23, 42, 0.4);
-  --scroll: #c3cbdb;
-  --glow: rgba(79, 70, 229, 0.2);
+  --overlay: rgba(35, 32, 27, 0.38);
+  --scroll: #cbc6ba;
 }
 
 @theme inline {
@@ -89,6 +85,8 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01" on;
+  letter-spacing: 0.01em;
 }
 
 button,
@@ -98,44 +96,31 @@ textarea {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 80%, transparent);
   outline-offset: 2px;
 }
 
-/* Фон приложения: мягкое неоновое свечение поверх глубокого slate. */
+/* Фон приложения: едва заметная тёплая градация сверху, ниже — ровный тон. */
 .app-shell {
-  background:
-    radial-gradient(
-      1100px 620px at 12% -12%,
-      color-mix(in srgb, var(--accent) 14%, transparent),
-      transparent 62%
-    ),
-    radial-gradient(
-      900px 520px at 102% 112%,
-      color-mix(in srgb, #8b5cf6 11%, transparent),
-      transparent 58%
-    ),
-    var(--app);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 55%, var(--app)),
+    var(--app) 300px
+  );
 }
 
+/* Слово «KoSta» — ровный цвет без градиентной заливки, чуть плотнее шаг. */
 .brand-text {
-  background-image: linear-gradient(
-    120deg,
-    var(--accent-strong),
-    var(--accent) 45%,
-    #a855f7
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--ink);
+  letter-spacing: -0.02em;
 }
 
 .bubble-out {
-  background-image: linear-gradient(135deg, var(--bubble-out-1), var(--bubble-out-2));
+  background: var(--accent);
   color: #ffffff;
 }
 
@@ -146,11 +131,7 @@ textarea {
 }
 
 html.light .bubble-in {
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
-}
-
-.logo-glow {
-  box-shadow: 0 10px 34px -12px var(--glow);
+  box-shadow: 0 1px 2px rgba(42, 39, 34, 0.06);
 }
 
 .kosta-scroll {
@@ -174,24 +155,25 @@ html.light .bubble-in {
   background-clip: content-box;
 }
 
+/* Аватары: спокойные приглушённые тона, без градиентов и неона. */
 .avatar-grad-0 {
-  background-image: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background-color: #b95a46;
 }
 
 .avatar-grad-1 {
-  background-image: linear-gradient(135deg, #0ea5e9, #6366f1);
+  background-color: #b58b3f;
 }
 
 .avatar-grad-2 {
-  background-image: linear-gradient(135deg, #8b5cf6, #d946ef);
+  background-color: #6f8f67;
 }
 
 .avatar-grad-3 {
-  background-image: linear-gradient(135deg, #14b8a6, #0ea5e9);
+  background-color: #a0604a;
 }
 
 .avatar-grad-4 {
-  background-image: linear-gradient(135deg, #f59e0b, #ef4444);
+  background-color: #4f7f79;
 }
 
 @keyframes kosta-fade-in-up {
@@ -224,6 +206,7 @@ html.light .bubble-in {
   animation: kosta-toast-in 0.2s ease-out both;
 }
 
+/* Индикатор «печатает…»: лёгкое подрагивание точек. */
 @keyframes kosta-dot-bounce {
   0%,
   60%,
@@ -241,18 +224,45 @@ html.light .bubble-in {
   animation: kosta-dot-bounce 1.1s infinite ease-in-out;
 }
 
-@keyframes kosta-pulse-ring {
+/* Индикатор «онлайн»: статичное кольцо, без пульсации. */
+.status-dot-online {
+  animation: none;
+}
+
+/* Лёгкий «обойный» рисунок фона переписки — как в настоящих мессенджерах. */
+.chat-wallpaper {
+  background-color: var(--app);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--ink) 5%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 24px 24px;
+}
+
+@keyframes kosta-badge-pop {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--online) 55%, transparent);
+    transform: scale(0.6);
   }
-  70% {
-    box-shadow: 0 0 0 5px transparent;
+  60% {
+    transform: scale(1.1);
   }
   100% {
-    box-shadow: 0 0 0 0 transparent;
+    transform: scale(1);
   }
 }
 
-.status-dot-online {
-  animation: kosta-pulse-ring 2.4s infinite;
+/* Появление счётчика непрочитанного — лёгкий «поп». */
+.badge-pop {
+  animation: kosta-badge-pop 0.25s ease-out both;
+}
+
+/* Уважение к системной настройке «уменьшить движение». */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-up,
+  .animate-toast-in,
+  .typing-dot,
+  .badge-pop {
+    animation: none;
+  }
 }

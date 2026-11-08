@@ -14,6 +14,7 @@ import { buildTypingLabel } from './utils/format';
 import { downloadMedia, messagePreview } from './utils/media';
 import { useTheme } from './hooks/useTheme';
 import { useToasts } from './hooks/useToasts';
+import { useDrafts } from './hooks/useDrafts';
 import { AuthScreen } from './components/AuthScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
@@ -162,6 +163,7 @@ function appendIncomingMessage(
 export function App() {
   const [theme, setTheme, toggleTheme] = useTheme();
   const { toasts, remove, toast } = useToasts();
+  const drafts = useDrafts();
 
   const [session, setSession] = useState<Session | null>(null);
   const [me, setMe] = useState<Me | null>(null);
@@ -179,6 +181,9 @@ export function App() {
   const [authError, setAuthError] = useState('');
   const [modal, setModal] = useState<ModalKind | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
+  const [unreadDividerMessageId, setUnreadDividerMessageId] = useState<
+    number | null
+  >(null);
 
   const sessionRef = useRef<Session | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
@@ -186,6 +191,7 @@ export function App() {
   const chatsRef = useRef<ChatItem[]>([]);
   const messagesRef = useRef<UiMessage[]>([]);
   const wsRef = useRef<WsClient | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const typingTimersRef = useRef(new Map<number, number>());
   const typingStopTimerRef = useRef<number | null>(null);
   const typingSentRef = useRef(false);
@@ -359,6 +365,7 @@ export function App() {
     setTypingUsers([]);
     setModal(null);
     setLightbox(null);
+    setUnreadDividerMessageId(null);
     loadingMoreRef.current = false;
     clearTyping();
     stopTyping();
@@ -524,6 +531,20 @@ export function App() {
       }
     },
     [api, toast],
+  );
+
+  const handleCopyMessage = useCallback(
+    (message: UiMessage) => {
+      const text = message.text.trim();
+      if (!text) {
+        return;
+      }
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => toast.success('Текст скопирован'))
+        .catch(() => toast.error('Не удалось скопировать текст'));
+    },
+    [toast],
   );
 
   const handleOpenImage = useCallback((message: UiMessage, url: string) => {
@@ -830,6 +851,39 @@ export function App() {
     }
   }, [wsStatus]);
 
+  // ---------- глобальные шорткаты ----------
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (modal !== null || lightbox !== null) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target !== null &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+      const key = event.key.toLowerCase();
+
+      // Ctrl/Cmd+K — фокус на поиск чатов (как в Telegram/Notion).
+      if ((event.ctrlKey || event.metaKey) && key === 'k') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      // «/» вне поля ввода — тоже фокус поиска.
+      if (key === '/' && !isTyping && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [modal, lightbox]);
+
   // ---------- история активного чата ----------
 
   useEffect(() => {
@@ -841,6 +895,7 @@ export function App() {
       clearTyping();
       setMessages([]);
       setDetails(null);
+      setUnreadDividerMessageId(null);
       setHistoryLoading(false);
       setHasMore(false);
       setLoadingMore(false);
@@ -853,10 +908,16 @@ export function App() {
     clearTyping();
     setMessages([]);
     setDetails(null);
+    setUnreadDividerMessageId(null);
     setHistoryLoading(true);
     setHasMore(false);
     setLoadingMore(false);
     loadingMoreRef.current = false;
+    // Счётчик непрочитанных запоминаем до markChatRead — она его обнуляет,
+    // а разделитель «Непрочитанные сообщения» строится по этому числу.
+    const unreadAtOpen =
+      chatsRef.current.find((chat) => chat.id === activeChatId)?.unread_count ??
+      0;
     markChatRead(activeChatId);
 
     void (async () => {
@@ -868,9 +929,16 @@ export function App() {
         if (cancelled) {
           return;
         }
+        const merged = mergeHistory(history, messagesRef.current);
         setMessages((current) => mergeHistory(history, current));
         setHasMore(history.length >= PAGE_SIZE);
         setDetails(chatDetails);
+        if (unreadAtOpen > 0 && merged.length > 0) {
+          const skip = Math.min(unreadAtOpen, merged.length);
+          setUnreadDividerMessageId(merged[merged.length - skip].id);
+        } else {
+          setUnreadDividerMessageId(null);
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -957,6 +1025,7 @@ export function App() {
           activeChatId={activeChatId}
           wsStatus={wsStatus}
           theme={theme}
+          searchInputRef={searchInputRef}
           onToggleTheme={toggleTheme}
           onSelectChat={handleSelectChat}
           onNewChat={() => setModal('new-chat')}
@@ -975,6 +1044,7 @@ export function App() {
           hasMore={hasMore}
           typingLabel={typingLabel}
           wsStatus={wsStatus}
+          unreadDividerMessageId={unreadDividerMessageId}
           onBack={handleBack}
           onOpenInfo={() => {
             if (activeChatId !== null) {
@@ -987,6 +1057,9 @@ export function App() {
           onTypingInput={handleTypingInput}
           onOpenImage={handleOpenImage}
           onDownload={handleMediaDownload}
+          onCopyMessage={handleCopyMessage}
+          initialDraft={activeChatId !== null ? drafts.get(activeChatId) : ''}
+          onDraftChange={(chatId, text) => drafts.set(chatId, text)}
           className={activeChatId !== null ? 'flex' : 'hidden md:flex'}
         />
       </div>

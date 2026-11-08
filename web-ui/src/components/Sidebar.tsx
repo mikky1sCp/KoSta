@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type Ref } from 'react';
 import {
   MessageCircle,
   MessageSquarePlus,
@@ -21,6 +21,8 @@ interface SidebarProps {
   activeChatId: number | null;
   wsStatus: WsStatus;
   theme: Theme;
+  /** Ref на поле поиска — для глобальных шорткатов (Ctrl+K, «/»). */
+  searchInputRef?: Ref<HTMLInputElement>;
   onToggleTheme: () => void;
   onSelectChat: (chatId: number) => void;
   onNewChat: () => void;
@@ -79,6 +81,7 @@ export function Sidebar({
   activeChatId,
   wsStatus,
   theme,
+  searchInputRef,
   onToggleTheme,
   onSelectChat,
   onNewChat,
@@ -106,18 +109,18 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        'h-full min-h-0 w-full flex-col border-r border-line bg-panel/70 backdrop-blur-xl md:w-[360px] md:shrink-0 lg:w-[400px]',
+        'h-full min-h-0 w-full flex-col border-r border-line bg-panel md:w-[360px] md:shrink-0 lg:w-[400px]',
         className,
       )}
     >
       <header className="flex items-center justify-between gap-2 px-4 pb-4 pt-5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="logo-glow flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-accent text-white">
             <MessageCircle className="h-5 w-5" strokeWidth={2.3} aria-hidden="true" />
           </span>
           <span className="min-w-0">
             <span className="brand-text block text-xl font-bold leading-tight tracking-tight">
-              KoSta
+              KoSta<span className="text-accent-strong">.</span>
             </span>
             <span className="block text-[10px] uppercase tracking-[0.18em] text-muted">
               messenger
@@ -157,6 +160,7 @@ export function Sidebar({
         <div className="flex items-center gap-2 rounded-xl border border-line bg-panel-soft px-3 transition-colors focus-within:border-accent/60">
           <Search className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
           <input
+            ref={searchInputRef}
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -212,7 +216,7 @@ export function Sidebar({
           </div>
         ) : (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-            <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-panel-soft text-muted">
+            <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent-strong">
               {search.trim() ? (
                 <Search className="h-5 w-5" aria-hidden="true" />
               ) : (

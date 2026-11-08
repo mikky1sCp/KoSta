@@ -21,6 +21,10 @@ const MAX_MESSAGE_LENGTH = 4096;
 interface ComposerProps {
   chatId: number;
   connected: boolean;
+  /** Черновик из localStorage — восстанавливается при открытии чата. */
+  initialDraft?: string;
+  /** Каждое изменение текста сообщается наружу для сохранения черновика. */
+  onDraftChange: (chatId: number, text: string) => void;
   onSend: (text: string) => boolean;
   /** Загрузка вложения: true — сообщение ушло в чат. */
   onUpload: (
@@ -34,11 +38,13 @@ interface ComposerProps {
 export function Composer({
   chatId,
   connected,
+  initialDraft = '',
+  onDraftChange,
   onSend,
   onUpload,
   onTypingInput,
 }: ComposerProps) {
-  const [text, setText] = useState('');
+  const [text, setText] = useState(initialDraft);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -47,6 +53,8 @@ export function Composer({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Актуальный текст для решений «очищать/не очищать» внутри async-загрузки.
+  const textRef = useRef(initialDraft);
 
   // Textarea растёт по контенту до 10 строк.
   useEffect(() => {
@@ -126,8 +134,13 @@ export function Composer({
 
     setPendingFile(null);
     setProgress(0);
-    // Текст, набранный уже во время загрузки, не затираем.
-    setText((current) => (current.trim() === caption ? '' : current));
+    // Текст, набранный уже во время загрузки, не затираем; черновик
+    // очищаем только вместе с полем ввода.
+    if (textRef.current.trim() === caption) {
+      textRef.current = '';
+      setText('');
+      onDraftChange(chatId, '');
+    }
     onTypingInput(false);
   }
 
@@ -146,7 +159,9 @@ export function Composer({
     if (!sent) {
       return;
     }
+    textRef.current = '';
     setText('');
+    onDraftChange(chatId, '');
     onTypingInput(false);
   }
 
@@ -161,14 +176,16 @@ export function Composer({
   }
 
   function handleChange(value: string) {
+    textRef.current = value;
     setText(value);
     onTypingInput(value.trim().length > 0);
+    onDraftChange(chatId, value);
   }
 
   const sendLabel = pendingFile ? 'Отправить файл' : 'Отправить сообщение';
 
   return (
-    <div className="border-t border-line bg-panel/70 px-3 py-3 backdrop-blur md:px-5">
+    <div className="border-t border-line bg-panel px-3 py-3 md:px-5">
       <div className="mx-auto w-full max-w-3xl">
         {!connected && (
           <div className="mb-2 flex items-center gap-2 rounded-xl border border-warn/25 bg-warn/10 px-3 py-1.5 text-xs text-warn">
@@ -212,7 +229,7 @@ export function Composer({
                   aria-valuenow={progress}
                 >
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-[width] duration-150 ease-out"
+                    className="h-full rounded-full bg-accent transition-[width] duration-150 ease-out"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
@@ -291,7 +308,7 @@ export function Composer({
             className={cn(
               'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-all',
               canSend
-                ? 'bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-900/30 hover:from-indigo-400 hover:to-violet-500 active:scale-95'
+                ? 'bg-accent text-white hover:bg-accent/90 active:scale-95'
                 : 'cursor-not-allowed bg-panel-strong text-muted',
             )}
           >

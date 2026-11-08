@@ -63,7 +63,7 @@ export function Lightbox({ src, title, caption, onClose, onDownload }: LightboxP
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="fixed inset-0 z-[60] flex flex-col bg-black/90 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex flex-col bg-black/95"
       onMouseDown={handleBackdropMouseDown}
     >
       <div className="flex items-center gap-2 px-4 py-3 text-white">
@@ -105,7 +105,7 @@ export function Lightbox({ src, title, caption, onClose, onDownload }: LightboxP
         <img
           src={src}
           alt={title}
-          className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+          className="max-h-full max-w-full rounded-lg object-contain shadow-xl"
         />
       </div>
 

@@ -49,7 +49,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] backdrop-blur-sm sm:items-center sm:p-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] sm:items-center sm:p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -61,7 +61,7 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         className={cn(
-          'animate-fade-in-up flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl border border-line bg-panel shadow-2xl sm:rounded-3xl',
+          'animate-fade-in-up flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl border border-line bg-panel shadow-xl sm:rounded-3xl',
           SIZE_CLASS[size],
         )}
       >
@@ -72,7 +72,10 @@ export function Modal({
             </span>
           )}
           <div className="min-w-0 flex-1">
-            <h2 id={titleId} className="truncate text-base font-semibold text-ink">
+            <h2
+              id={titleId}
+              className="truncate text-base font-semibold tracking-tight text-ink"
+            >
               {title}
             </h2>
             {subtitle && (

@@ -48,7 +48,7 @@ export function ToastViewport({ toasts, onDismiss }: ToastViewportProps) {
             role="status"
             aria-live="polite"
             className={cn(
-              'animate-toast-in pointer-events-auto flex w-full max-w-md items-start gap-2.5 rounded-2xl border px-3.5 py-3 shadow-xl backdrop-blur',
+              'animate-toast-in pointer-events-auto flex w-full max-w-md items-start gap-2.5 rounded-2xl border px-3.5 py-3 shadow-lg',
               variant.className,
             )}
           >
