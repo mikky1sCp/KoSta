@@ -35,6 +35,29 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+  windows-build-test:
+    name: Build, clippy, tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
   web-ui:
     name: Web UI build
     runs-on: ubuntu-latest

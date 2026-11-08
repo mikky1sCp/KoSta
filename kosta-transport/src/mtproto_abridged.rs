@@ -149,6 +149,41 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    /// Детерминированный xorshift (без внешних зависимостей).
+    struct Xorshift(u64);
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| (self.next() & 0xff) as u8).collect()
+        }
+    }
+
+    #[test]
+    fn random_and_truncated_bytes_never_panic() {
+        let mut rng = Xorshift(0xC0FF_EE11_2233_4455);
+        for _ in 0..250 {
+            let len = (rng.next() % 96) as usize;
+            let mut buffer = rng.bytes(len);
+            // slice-декодер мутирует буфер; главное — Ok или Err, не паника.
+            let _ = decode_frame_from_slice(&mut buffer);
+            let _ = decode_frame(&mut Cursor::new(rng.bytes(len)));
+        }
+
+        let frame = encode_frame(&[0xABu8; 64]).unwrap();
+        for cut in 0..=frame.len() {
+            let mut slice = frame[..cut].to_vec();
+            let _ = decode_frame_from_slice(&mut slice);
+            let _ = decode_frame(&mut Cursor::new(&frame[..cut]));
+        }
+    }
+
     #[test]
     fn init_byte_roundtrip() {
         let mut buffer = Vec::new();

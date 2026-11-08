@@ -91,6 +91,7 @@ pub fn check_limit<K: Eq + std::hash::Hash + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn limiter_blocks_after_limit() {
@@ -112,6 +113,52 @@ mod tests {
         assert!(
             limiter.check("ip".to_string()).is_ok(),
             "после окна лимит должен снова разрешать"
+        );
+    }
+
+    #[test]
+    fn storage_does_not_grow_unboundedly() {
+        // Много разных ключей с малым числом запросов в каждом: словарь должен
+        // уметь вычищаться после истечения окна, а не блокировать «свежие» ключи.
+        let limiter = RateLimiter::new(Duration::from_millis(5), 1000);
+        for i in 0..(MAX_TRACKED_KEYS + 512) {
+            assert!(limiter.check(format!("key-{i}")).is_ok());
+        }
+        // Окно истекает — следующий вызов запускает retain и чистит всё.
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(
+            limiter.check("fresh".to_string()).is_ok(),
+            "после чистки просроченных ключей новый ключ должен проходить"
+        );
+    }
+
+    #[test]
+    fn limiter_is_correct_under_concurrency() {
+        let limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 2));
+        let accepted = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let limiter = Arc::clone(&limiter);
+            let accepted = Arc::clone(&accepted);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..100 {
+                    if limiter.check("same-key".to_string()).is_ok() {
+                        accepted.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // При макс. 2 запросах в окне суммарно должно пройти ровно 2, несмотря
+        // на гонку 8 потоков.
+        assert_eq!(
+            accepted.load(Ordering::Relaxed),
+            2,
+            "ограничитель должен быть корректным при конкурентном доступе"
         );
     }
 }

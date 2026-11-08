@@ -937,4 +937,43 @@ getDialogs = ChatMessage;
             assert_eq!(constructor.id, expected, "wrong id for `{name}`");
         }
     }
+
+    /// Детерминированный xorshift (без внешних зависимостей).
+    struct Xorshift(u64);
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        /// «Опасная» строка из алфавита TL-схемы и случайного мусора.
+        fn schema_buf(&mut self, len: usize) -> String {
+            const CHARS: &[u8] =
+                b"abcXYZ_:num#0123456789abcdef=; vector<>./-\\ \t\n{}~!`@$%^&*()";
+            (0..len)
+                .map(|_| CHARS[(self.next() as usize) % CHARS.len()] as char)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn garbage_schema_never_panics() {
+        let mut rng = Xorshift(0xDEAD_BEEF_CAFE_F00D);
+        for _ in 0..300 {
+            let len = (rng.next() % 300) as usize;
+            let source = rng.schema_buf(len);
+            // Ок или Err — главное, чтобы парсер/генератор не паниковали.
+            if let Ok(schema) = parse_schema(&source) {
+                let _ = generate(&schema);
+            }
+        }
+
+        // Каждый обрезанный префикс валидной схемы тоже не должен паниковать.
+        for cut in 0..=SAMPLE.len() {
+            let _ = parse_schema(&SAMPLE[..cut]);
+        }
+    }
 }

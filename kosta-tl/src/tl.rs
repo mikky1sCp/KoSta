@@ -516,4 +516,61 @@ mod tests {
         let mut reader = Reader::new(&out);
         assert!(Vec::<i64>::read_bytes(&mut reader).is_err());
     }
+
+    /// Детерминированный xorshift (без внешних зависимостей).
+    struct Xorshift(u64);
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| (self.next() & 0xff) as u8).collect()
+        }
+    }
+
+    #[test]
+    fn random_and_truncated_bytes_never_panic() {
+        let mut rng = Xorshift(0xDEAD_BEEF_CAFE_F00D);
+
+        // Случайные данные любой длины — только Ok/Err, не паника, для всех типов.
+        for _ in 0..200 {
+            let len = (rng.next() % 56) as usize;
+            let data = rng.bytes(len);
+            let mut r = Reader::new(&data);
+            let _ = i32::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = i64::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = f64::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = bool::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = String::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = Bytes::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = Int128::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = Int256::read_bytes(&mut r);
+            let mut r = Reader::new(&data);
+            let _ = Vec::<i64>::read_bytes(&mut r);
+        }
+
+        // Каждый обрезанный префикс валидно-закодированного объекта тоже.
+        let mut out = Vec::new();
+        Bytes(vec![1, 2, 3, 4, 5]).write_bytes(&mut out).unwrap();
+        vec![1i64, 2, 3].write_bytes(&mut out).unwrap();
+        "coast".to_string().write_bytes(&mut out).unwrap();
+        for cut in 0..out.len() {
+            let mut r = Reader::new(&out[..cut]);
+            let _ = Bytes::read_bytes(&mut r);
+            let _ = Vec::<i64>::read_bytes(&mut r);
+            let _ = String::read_bytes(&mut r);
+        }
+    }
 }

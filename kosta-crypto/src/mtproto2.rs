@@ -390,4 +390,56 @@ mod tests {
         other[255] ^= 0x01;
         assert_ne!(id, auth_key_id(&other));
     }
+
+    /// Детерминированный xorshift (без внешних rand-фич), чтобы тест был
+    /// воспроизводим в любом окружении.
+    struct Xorshift(u64);
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| (self.next() & 0xff) as u8).collect()
+        }
+    }
+
+    #[test]
+    fn randomized_roundtrip_across_many_plaintext_lengths() {
+        let auth_key = kat_auth_key();
+        let mut rng = Xorshift(0x5EED_5EED_0C0F_0FEE);
+        for direction in [Direction::ClientToServer, Direction::ServerToClient] {
+            for _ in 0..400 {
+                let len = (rng.next() % 3200) as usize;
+                let plaintext = rng.bytes(len);
+                let sealed = seal(&auth_key, direction, &plaintext).unwrap();
+                assert!(sealed.ciphertext.len().is_multiple_of(ige::BLOCK));
+                let opened = open(&auth_key, direction, &sealed.msg_key, &sealed.ciphertext).unwrap();
+                assert_eq!(&opened[..len], &plaintext[..], "len={len}");
+                let pad = check_padding(opened.len(), len).unwrap();
+                assert!((MIN_PADDING..=MAX_PADDING).contains(&pad), "len={len} pad={pad}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_random_ciphertext_tamper_is_rejected() {
+        let auth_key = kat_auth_key();
+        let plaintext = vec![0xABu8; 64];
+        let sealed = seal(&auth_key, Direction::ClientToServer, &plaintext).unwrap();
+        let mut rng = Xorshift(0xFACE_BEEF);
+        for _ in 0..300 {
+            let pos = (rng.next() % sealed.ciphertext.len() as u64) as usize;
+            let mut tampered = sealed.ciphertext.clone();
+            tampered[pos] ^= 0b1010_1010;
+            assert!(
+                open(&auth_key, Direction::ClientToServer, &sealed.msg_key, &tampered).is_err(),
+                "изменение байта {pos} не должно расшифровываться"
+            );
+        }
+    }
 }
