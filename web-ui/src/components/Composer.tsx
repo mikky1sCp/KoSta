@@ -271,11 +271,20 @@ export function Composer({
   }
 
   async function startRecording() {
+    // Микрофон доступен только в защищённом контексте (https или localhost).
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      setRecordError(
+        'Запись возможна только по HTTPS или на localhost. Откройте интерфейс как http://127.0.0.1:8081.',
+      );
+      return;
+    }
     if (
       typeof MediaRecorder === 'undefined' ||
       !navigator.mediaDevices?.getUserMedia
     ) {
-      setRecordError('Запись голоса не поддерживается этим браузером.');
+      setRecordError(
+        'Браузер не поддерживает запись звука (нет MediaRecorder или getUserMedia).',
+      );
       return;
     }
     try {
@@ -304,7 +313,9 @@ export function Composer({
       recorder.onstop = () => {
         void finalizeRecording();
       };
-      recorder.start();
+      // timeslice: чанки приходят по ходу записи, поэтому даже короткая
+      // запись гарантированно даёт данные в ondataavailable.
+      recorder.start(250);
       setRecordError('');
       setRecording(true);
       setRecordSeconds(0);
@@ -317,8 +328,18 @@ export function Composer({
           return current + 1;
         });
       }, 1000);
-    } catch {
-      setRecordError('Нет доступа к микрофону. Разрешите его в настройках браузера.');
+    } catch (error) {
+      // Разные причины отказа требуют разных действий — показываем их явно.
+      const name = error instanceof DOMException ? error.name : '';
+      const reason =
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'Доступ к микрофону запрещён. Разрешите его в настройках сайта (иконка замка/микрофона в адресной строке).'
+          : name === 'NotFoundError' || name === 'DevicesNotFoundError'
+            ? 'Микрофон не найден. Подключите его и попробуйте снова.'
+            : name === 'NotReadableError' || name === 'TrackStartError'
+              ? 'Микрофон занят другим приложением.'
+              : `Не удалось начать запись${name ? ` (${name})` : ''}. Проверьте доступ к микрофону в настройках браузера.`;
+      setRecordError(reason);
       resetRecording();
     }
   }
