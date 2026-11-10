@@ -30,12 +30,17 @@ interface MessageListProps {
   isGroup: boolean;
   participants: Participant[];
   api: Api;
+  /** id текущего пользователя — чтобы подписать цитату «Вы». */
+  myUserId: number;
   /** id первого сообщения из непрочитанного блока: над ним рисуем разделитель. */
   unreadDividerMessageId: number | null;
   onLoadMore: () => Promise<boolean>;
   onOpenImage: (message: UiMessage, url: string) => void;
   onDownload: (message: UiMessage) => Promise<void>;
   onCopyMessage: (message: UiMessage) => void;
+  onReplyMessage: (message: UiMessage) => void;
+  onEditMessage: (message: UiMessage) => void;
+  onDeleteMessage: (message: UiMessage) => void;
 }
 
 function MessagesSkeleton() {
@@ -68,11 +73,15 @@ export function MessageList({
   isGroup,
   participants,
   api,
+  myUserId,
   unreadDividerMessageId,
   onLoadMore,
   onOpenImage,
   onDownload,
   onCopyMessage,
+  onReplyMessage,
+  onEditMessage,
+  onDeleteMessage,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -220,6 +229,22 @@ export function MessageList({
       participants.find((participant) => participant.user_id === message.sender_id)
         ?.phone ?? null;
 
+    // Подпись цитаты: «Вы» для своих, телефон участника для чужих,
+    // отдельная строка для удалённого сообщения.
+    let replyAuthor: string | null = null;
+    if (message.reply_to_id != null) {
+      if (message.reply_to_sender_id == null) {
+        replyAuthor = 'Сообщение удалено';
+      } else if (message.reply_to_sender_id === myUserId) {
+        replyAuthor = 'Вы';
+      } else {
+        replyAuthor =
+          participants.find(
+            (participant) => participant.user_id === message.reply_to_sender_id,
+          )?.phone ?? 'Участник';
+      }
+    }
+
     if (
       unreadDividerMessageId !== null &&
       message.id === unreadDividerMessageId
@@ -251,11 +276,15 @@ export function MessageList({
             ? SENDER_COLORS[message.sender_id % SENDER_COLORS.length]
             : undefined
         }
+        replyAuthor={replyAuthor}
         tail={!groupedWithNext}
         api={api}
         onOpenImage={onOpenImage}
         onDownload={onDownload}
         onCopyMessage={onCopyMessage}
+        onReplyMessage={onReplyMessage}
+        onEditMessage={onEditMessage}
+        onDeleteMessage={onDeleteMessage}
       />,
     );
 

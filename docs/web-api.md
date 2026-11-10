@@ -81,7 +81,12 @@ An array of messages, newest first (`limit` is clamped to 1..=200, `offset >= 0`
   "media_name": null,
   "media_type": null,
   "media_size": null,
-  "is_media": false
+  "is_media": false,
+  "reply_to_id": null,
+  "reply_to_text": null,
+  "reply_to_sender_id": null,
+  "reply_to_is_media": false,
+  "edited_at": null
 }
 ```
 
@@ -91,6 +96,34 @@ A foreign or missing dialog returns `403`/`404` respectively.
 For a media message `text` may be empty, `is_media` is `true`, `media_type` is the
 stored MIME type, `media_size` is the file size in bytes and `media_name` is the
 original file name (sanitized). The server-side storage path is never exposed.
+
+A message that replies to another one carries the quoted message in `reply_to_*`:
+`reply_to_id` is the quoted message, `reply_to_text` its text (or `null` when it was
+deleted), `reply_to_sender_id` its author and `reply_to_is_media` tells whether the
+quoted message was an attachment. `edited_at` is the last edit time in unix seconds,
+or `null` if the message was never edited.
+
+### PATCH /api/messages/{id}
+
+Edit one of your own messages. Body: `{"text": "new text"}` (1..4096 characters).
+
+- `200` — `{"ok": true, "edited_at": 1794057600}`; subscribers of the dialog receive a
+  `message_edited` WebSocket event.
+- `400` — empty or too long text; `403` — not the sender or not a participant;
+  `404` — message not found or already deleted.
+
+### DELETE /api/messages/{id}
+
+Delete one of your own messages (soft delete: the row stays in the database with
+`deleted = 1` and history no longer returns it).
+
+- `200` — `{"ok": true}`; subscribers receive a `message_deleted` WebSocket event.
+- `403` — not the sender or not a participant; `404` — message not found.
+
+To reply, send `send_message` over the WebSocket with an extra `reply_to_id` field:
+`{"action":"send_message","payload":{"dialog_id":12,"text":"ok","reply_to_id":105}}`.
+The target message must belong to the same dialog and not be deleted, otherwise the
+server answers with an `error` event.
 
 ### GET /api/chats/{id}
 
@@ -229,6 +262,9 @@ Server → client:
 - `user_status {"user_id", "status"}` — `0` online, `1` offline; broadcast only to
   users who share a dialog
 - `messages_read {"dialog_id", "reader_id"}` — someone read incoming messages
+- `message_edited {"dialog_id", "message_id", "text", "edited_at"}` — a message was
+  edited by its author
+- `message_deleted {"dialog_id", "message_id"}` — a message was deleted by its author
 - `error {"error"}`
 
 Limits: auth — 10 attempts/minute per IP, frames — 60/s per IP, messages — 10/s per

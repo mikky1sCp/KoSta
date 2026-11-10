@@ -44,5 +44,10 @@ export function parseMessagePayload(value: unknown): Message | null {
     media_type: asNullableString(value.media_type),
     media_size: asNullableNumber(value.media_size),
     is_media: value.is_media === true,
+    reply_to_id: asNullableNumber(value.reply_to_id),
+    reply_to_text: asNullableString(value.reply_to_text),
+    reply_to_sender_id: asNullableNumber(value.reply_to_sender_id),
+    reply_to_is_media: value.reply_to_is_media === true,
+    edited_at: asNullableNumber(value.edited_at),
   };
 }

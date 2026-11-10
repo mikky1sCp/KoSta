@@ -43,6 +43,16 @@ export interface Message {
   /** Размер файла в байтах. */
   media_size: number | null;
   is_media: boolean;
+  /** Сообщение, на которое это отвечает (цитата). */
+  reply_to_id: number | null;
+  /** Текст цитируемого сообщения; null, если оно удалено. */
+  reply_to_text: string | null;
+  /** Автор цитируемого сообщения. */
+  reply_to_sender_id: number | null;
+  /** Было ли цитируемое сообщение медиа. */
+  reply_to_is_media: boolean;
+  /** Время последней правки (unix seconds), null — не редактировалось. */
+  edited_at: number | null;
 }
 
 /** Сообщение в локальном состоянии: pending — ещё летит на сервер. */

@@ -346,7 +346,38 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                             .unwrap()
                             .as_secs() as i64;
 
-                        match self.db.save_message(dialog_id, user_id, text, now, true, None, None) {
+                        // Ответ на сообщение (цитата): цель должна лежать в этом
+                        // же диалоге и не быть удалённой, иначе через цитату
+                        // можно было бы вытащить текст чужой переписки.
+                        let reply_to_id = payload.get("reply_to_id").and_then(Value::as_i64);
+                        let mut reply_text: Option<String> = None;
+                        let mut reply_sender_id: Option<i64> = None;
+                        let mut reply_is_media = false;
+                        if let Some(reply_id) = reply_to_id {
+                            match self.db.is_replyable_in_dialog(reply_id, dialog_id) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    send_error(ctx, "Cannot reply to this message");
+                                    return;
+                                }
+                                Err(e) => {
+                                    error!("Failed to check reply target {}: {}", reply_id, e);
+                                    send_error(ctx, "Failed to check reply target");
+                                    return;
+                                }
+                            }
+                            if let Ok(Some(meta)) = self.db.get_message_meta(reply_id) {
+                                reply_text = Some(meta.text);
+                                reply_sender_id = Some(meta.sender_id);
+                                reply_is_media = meta.is_media;
+                            }
+                        }
+
+                        let saved = self.db.save_message_with_reply(
+                            dialog_id, user_id, text, now, true, None, None, reply_to_id,
+                        );
+
+                        match saved {
                             Ok(msg_id) => {
                                 MESSAGES_SENT.inc();
 
@@ -365,6 +396,11 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                                             "is_outgoing": outgoing,
                                             "read": false,
                                             "delivered": false,
+                                            "reply_to_id": reply_to_id,
+                                            "reply_to_text": reply_text,
+                                            "reply_to_sender_id": reply_sender_id,
+                                            "reply_to_is_media": reply_is_media,
+                                            "edited_at": serde_json::Value::Null,
                                         }
                                     })
                                 };

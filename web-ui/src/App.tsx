@@ -184,6 +184,9 @@ export function App() {
   const [unreadDividerMessageId, setUnreadDividerMessageId] = useState<
     number | null
   >(null);
+  // Ответ на сообщение и режим правки — взаимоисключающие режимы композера.
+  const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
+  const [editing, setEditing] = useState<UiMessage | null>(null);
 
   const sessionRef = useRef<Session | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
@@ -192,6 +195,7 @@ export function App() {
   const messagesRef = useRef<UiMessage[]>([]);
   const wsRef = useRef<WsClient | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const replyToRef = useRef<UiMessage | null>(null);
   const typingTimersRef = useRef(new Map<number, number>());
   const typingStopTimerRef = useRef<number | null>(null);
   const typingSentRef = useRef(false);
@@ -444,6 +448,7 @@ export function App() {
         return false;
       }
 
+      const replyTarget = replyToRef.current;
       pendingMessageIdRef.current += 1;
       const timestamp = Math.floor(Date.now() / 1000);
       const pending: UiMessage = {
@@ -458,14 +463,20 @@ export function App() {
         media_type: null,
         media_size: null,
         is_media: false,
+        reply_to_id: replyTarget?.id ?? null,
+        reply_to_text: replyTarget ? messagePreview(replyTarget) : null,
+        reply_to_sender_id: replyTarget?.sender_id ?? null,
+        reply_to_is_media: replyTarget?.is_media ?? false,
+        edited_at: null,
         pending: true,
       };
 
-      if (!client.sendMessage(chatId, text)) {
+      if (!client.sendMessage(chatId, text, replyTarget?.id ?? null)) {
         toast.error('Не удалось отправить сообщение');
         return false;
       }
       stopTyping();
+      setReplyTo(null);
       setMessages((current) => [...current, pending]);
       setChats((current) => bumpChat(current, chatId, text, timestamp));
       return true;
@@ -545,6 +556,84 @@ export function App() {
         .catch(() => toast.error('Не удалось скопировать текст'));
     },
     [toast],
+  );
+
+  // ---------- ответы, правка, удаление ----------
+
+  const handleReplyMessage = useCallback((message: UiMessage) => {
+    setEditing(null);
+    setReplyTo(message);
+  }, []);
+
+  const handleEditMessage = useCallback((message: UiMessage) => {
+    setReplyTo(null);
+    setEditing(message);
+  }, []);
+
+  const handleCancelReply = useCallback(() => setReplyTo(null), []);
+  const handleCancelEdit = useCallback(() => setEditing(null), []);
+
+  const handleEditSubmit = useCallback(
+    (text: string) => {
+      const target = editing;
+      if (!target) {
+        return;
+      }
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+      const now = Math.floor(Date.now() / 1000);
+      // Оптимистично обновляем ленту; серверное эхо `message_edited`
+      // затем перезапишет те же поля (идемпотентно).
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === target.id
+            ? { ...message, text: trimmed, edited_at: now }
+            : message,
+        ),
+      );
+      setChats((current) =>
+        current.map((chat) =>
+          chat.id === activeChatIdRef.current && chat.last_message === target.text
+            ? { ...chat, last_message: trimmed }
+            : chat,
+        ),
+      );
+      setEditing(null);
+      void api.editMessage(target.id, trimmed).catch((error) => {
+        if (!(error instanceof ApiError && error.status === 401)) {
+          toast.error(getErrorMessage(error));
+        }
+        // Возвращаем исходный текст, если сервер отказал.
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === target.id
+              ? { ...message, text: target.text, edited_at: target.edited_at }
+              : message,
+          ),
+        );
+      });
+    },
+    [api, editing, toast],
+  );
+
+  const handleDeleteMessage = useCallback(
+    (message: UiMessage) => {
+      if (!window.confirm('Удалить сообщение?')) {
+        return;
+      }
+      setMessages((current) => current.filter((item) => item.id !== message.id));
+      setReplyTo((current) => (current?.id === message.id ? null : current));
+      setEditing((current) => (current?.id === message.id ? null : current));
+      void api.deleteMessage(message.id).catch((error) => {
+        if (!(error instanceof ApiError && error.status === 401)) {
+          toast.error(getErrorMessage(error));
+        }
+        void refreshChats({ silent: true });
+      });
+    },
+    [api, refreshChats, toast],
   );
 
   const handleOpenImage = useCallback((message: UiMessage, url: string) => {
@@ -682,6 +771,35 @@ export function App() {
         break;
       }
 
+      case 'message_edited': {
+        const { dialog_id, message_id, text, edited_at } = event.payload;
+        if (dialog_id !== activeChatIdRef.current) {
+          // Лента не открыта: актуальный текст придёт с историей при открытии.
+          break;
+        }
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === message_id
+              ? { ...message, text, edited_at }
+              : message,
+          ),
+        );
+        break;
+      }
+
+      case 'message_deleted': {
+        const { dialog_id, message_id } = event.payload;
+        setReplyTo((current) => (current?.id === message_id ? null : current));
+        setEditing((current) => (current?.id === message_id ? null : current));
+        if (dialog_id !== activeChatIdRef.current) {
+          break;
+        }
+        setMessages((current) =>
+          current.filter((message) => message.id !== message_id),
+        );
+        break;
+      }
+
       case 'error':
         toast.error(event.payload.error || 'Ошибка соединения');
         break;
@@ -751,11 +869,18 @@ export function App() {
   useEffect(() => {
     // Лайтбокс привязан к blob-url сообщения из ленты: при смене чата закрываем.
     setLightbox(null);
+    // Ответ и правка относятся к сообщению конкретного чата.
+    setReplyTo(null);
+    setEditing(null);
   }, [activeChatId]);
 
   useEffect(() => {
     meRef.current = me;
   }, [me]);
+
+  useEffect(() => {
+    replyToRef.current = replyTo;
+  }, [replyTo]);
 
   useEffect(() => {
     chatsRef.current = chats;
@@ -1001,6 +1126,24 @@ export function App() {
     [typingUsers, details, activeChat],
   );
 
+  // Представление ответа для композера: автор + короткий текст цитаты.
+  const replyToView = useMemo(() => {
+    if (!replyTo) {
+      return null;
+    }
+    const author = replyTo.is_outgoing
+      ? 'Вы'
+      : details?.participants.find(
+          (participant) => participant.user_id === replyTo.sender_id,
+        )?.phone ?? 'Участник';
+    return { author, text: messagePreview(replyTo) };
+  }, [replyTo, details]);
+
+  const editingView = useMemo(
+    () => (editing ? { text: editing.text } : null),
+    [editing],
+  );
+
   if (!session) {
     return (
       <>
@@ -1045,6 +1188,12 @@ export function App() {
           typingLabel={typingLabel}
           wsStatus={wsStatus}
           unreadDividerMessageId={unreadDividerMessageId}
+          myUserId={me?.user_id ?? 0}
+          replyTo={replyToView}
+          editing={editingView}
+          onCancelReply={handleCancelReply}
+          onCancelEdit={handleCancelEdit}
+          onEditSubmit={handleEditSubmit}
           onBack={handleBack}
           onOpenInfo={() => {
             if (activeChatId !== null) {
@@ -1058,6 +1207,9 @@ export function App() {
           onOpenImage={handleOpenImage}
           onDownload={handleMediaDownload}
           onCopyMessage={handleCopyMessage}
+          onReplyMessage={handleReplyMessage}
+          onEditMessage={handleEditMessage}
+          onDeleteMessage={handleDeleteMessage}
           initialDraft={activeChatId !== null ? drafts.get(activeChatId) : ''}
           onDraftChange={(chatId, text) => drafts.set(chatId, text)}
           className={activeChatId !== null ? 'flex' : 'hidden md:flex'}

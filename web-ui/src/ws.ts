@@ -10,6 +10,11 @@ export type WsEvent =
   | { type: 'typing'; payload: { dialog_id: number; user_id: number; typing: boolean } }
   | { type: 'user_status'; payload: { user_id: number; status: number } }
   | { type: 'messages_read'; payload: { dialog_id: number; reader_id: number } }
+  | {
+      type: 'message_edited';
+      payload: { dialog_id: number; message_id: number; text: string; edited_at: number };
+    }
+  | { type: 'message_deleted'; payload: { dialog_id: number; message_id: number } }
   | { type: 'error'; payload: { error: string } };
 
 export interface WsHandlers {
@@ -133,8 +138,12 @@ export class WsClient {
     }
   }
 
-  sendMessage(dialogId: number, text: string): boolean {
-    return this.sendFrame('send_message', { dialog_id: dialogId, text });
+  sendMessage(dialogId: number, text: string, replyToId?: number | null): boolean {
+    const payload: Payload = { dialog_id: dialogId, text };
+    if (replyToId != null) {
+      payload.reply_to_id = replyToId;
+    }
+    return this.sendFrame('send_message', payload);
   }
 
   sendTyping(dialogId: number, typing: boolean): boolean {
@@ -265,6 +274,26 @@ export class WsClient {
           payload: {
             dialog_id: asNumber(payload.dialog_id),
             reader_id: asNumber(payload.reader_id),
+          },
+        });
+        break;
+      case 'message_edited':
+        this.handlers.onEvent({
+          type: 'message_edited',
+          payload: {
+            dialog_id: asNumber(payload.dialog_id),
+            message_id: asNumber(payload.message_id),
+            text: asString(payload.text),
+            edited_at: asNumber(payload.edited_at),
+          },
+        });
+        break;
+      case 'message_deleted':
+        this.handlers.onEvent({
+          type: 'message_deleted',
+          payload: {
+            dialog_id: asNumber(payload.dialog_id),
+            message_id: asNumber(payload.message_id),
           },
         });
         break;

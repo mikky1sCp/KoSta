@@ -23,6 +23,13 @@ interface ComposerProps {
   connected: boolean;
   /** Черновик из localStorage — восстанавливается при открытии чата. */
   initialDraft?: string;
+  /** Ответ на сообщение: автор и текст цитаты. */
+  replyTo?: { author: string; text: string } | null;
+  /** Режим правки: исходный текст сообщения. */
+  editing?: { text: string } | null;
+  onCancelReply?: () => void;
+  onCancelEdit?: () => void;
+  onEditSubmit?: (text: string) => void;
   /** Каждое изменение текста сообщается наружу для сохранения черновика. */
   onDraftChange: (chatId: number, text: string) => void;
   onSend: (text: string) => boolean;
@@ -39,6 +46,11 @@ export function Composer({
   chatId,
   connected,
   initialDraft = '',
+  replyTo = null,
+  editing = null,
+  onCancelReply,
+  onCancelEdit,
+  onEditSubmit,
   onDraftChange,
   onSend,
   onUpload,
@@ -69,6 +81,16 @@ export function Composer({
   useEffect(() => {
     textareaRef.current?.focus();
   }, [chatId]);
+
+  // Вход в режим правки подставляет исходный текст в поле ввода.
+  useEffect(() => {
+    if (!editing) {
+      return;
+    }
+    textRef.current = editing.text;
+    setText(editing.text);
+    textareaRef.current?.focus();
+  }, [editing]);
 
   // Локальная миниатюра выбранного изображения (файл ещё не загружен).
   useEffect(() => {
@@ -148,6 +170,17 @@ export function Composer({
     if (uploading) {
       return;
     }
+    // Режим правки: сохраняем текст, а не отправляем новое сообщение.
+    if (editing) {
+      if (!trimmed || !onEditSubmit) {
+        return;
+      }
+      onEditSubmit(trimmed);
+      textRef.current = '';
+      setText('');
+      onTypingInput(false);
+      return;
+    }
     if (pendingFile) {
       await uploadPending();
       return;
@@ -182,11 +215,37 @@ export function Composer({
     onDraftChange(chatId, value);
   }
 
-  const sendLabel = pendingFile ? 'Отправить файл' : 'Отправить сообщение';
+  const sendLabel = editing
+    ? 'Сохранить изменения'
+    : pendingFile
+      ? 'Отправить файл'
+      : 'Отправить сообщение';
 
   return (
     <div className="border-t border-line bg-panel px-3 py-3 md:px-5">
       <div className="mx-auto w-full max-w-3xl">
+        {(replyTo || editing) && (
+          <div className="mb-2 flex items-center gap-2 rounded-xl border border-line bg-panel-soft px-2.5 py-2">
+            <span className="h-8 w-0.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[11px] font-semibold text-accent-strong">
+                {editing ? 'Редактирование' : `Ответ · ${replyTo?.author ?? ''}`}
+              </p>
+              <p className="truncate text-[11px] text-muted">
+                {editing ? editing.text : replyTo?.text}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={editing ? onCancelEdit : onCancelReply}
+              aria-label={editing ? 'Отменить редактирование' : 'Отменить ответ'}
+              title="Отменить"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-panel-strong hover:text-ink"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+        )}
         {!connected && (
           <div className="mb-2 flex items-center gap-2 rounded-xl border border-warn/25 bg-warn/10 px-3 py-1.5 text-xs text-warn">
             <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -289,13 +348,23 @@ export function Composer({
             maxLength={MAX_MESSAGE_LENGTH}
             rows={1}
             placeholder={
-              pendingFile
-                ? 'Добавить подпись…'
-                : connected
-                  ? 'Сообщение…'
-                  : 'Ожидание соединения…'
+              editing
+                ? 'Изменить сообщение…'
+                : pendingFile
+                  ? 'Добавить подпись…'
+                  : connected
+                    ? replyTo
+                      ? 'Ответ…'
+                      : 'Сообщение…'
+                    : 'Ожидание соединения…'
             }
-            aria-label={pendingFile ? 'Подпись к файлу' : 'Текст сообщения'}
+            aria-label={
+              editing
+                ? 'Редактируемый текст сообщения'
+                : pendingFile
+                  ? 'Подпись к файлу'
+                  : 'Текст сообщения'
+            }
             className="kosta-scroll max-h-40 min-h-10 w-full resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-ink outline-none placeholder:text-muted"
           />
 

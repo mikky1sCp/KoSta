@@ -85,6 +85,12 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                                 .route(web::post().to(handlers::upload_media)),
                         )
                         .route("/history", web::get().to(handlers::get_history))
+                        // Правка и удаление своего сообщения (мягкое удаление).
+                        .service(
+                            web::resource("/messages/{id}")
+                                .route(web::patch().to(handlers::edit_message))
+                                .route(web::delete().to(handlers::delete_message)),
+                        )
                         // Скачивание по id сообщения: путь хранения наружу не отдаётся.
                         .route("/media/{message_id}", web::get().to(handlers::download_media))
                         .route("/users/lookup", web::get().to(handlers::lookup_user))

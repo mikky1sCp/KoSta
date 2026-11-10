@@ -37,6 +37,16 @@ pub struct HistoryRow {
     pub media_type: Option<String>,
     pub media_size: Option<i64>,
     pub media_name: Option<String>,
+    /// Сообщение, на которое это отвечает (цитата).
+    pub reply_to_id: Option<i64>,
+    /// Текст цитируемого сообщения; `None`, если оно удалено или не найдено.
+    pub reply_text: Option<String>,
+    /// Автор цитируемого сообщения.
+    pub reply_sender_id: Option<i64>,
+    /// Было ли цитируемое сообщение медиа.
+    pub reply_is_media: bool,
+    /// Время последнего редактирования (unix seconds).
+    pub edited_at: Option<i64>,
 }
 
 impl HistoryRow {
@@ -44,6 +54,15 @@ impl HistoryRow {
     pub fn is_media(&self) -> bool {
         self.media_path.is_some()
     }
+}
+
+/// Метаданные сообщения для рассылки правки/удаления.
+#[derive(Debug, Clone)]
+pub struct MessageMeta {
+    pub dialog_id: i64,
+    pub sender_id: i64,
+    pub text: String,
+    pub is_media: bool,
 }
 
 /// Метаданные медиа-сообщения для `GET /api/media/{message_id}`.
@@ -287,6 +306,8 @@ impl Database {
         ensure_column(&conn, "messages", "media_name", "TEXT")?;
         ensure_column(&conn, "messages", "edited_at", "INTEGER")?;
         ensure_column(&conn, "messages", "deleted", "INTEGER NOT NULL DEFAULT 0")?;
+        // Ответ на сообщение (цитата). NULL — обычное сообщение.
+        ensure_column(&conn, "messages", "reply_to_id", "INTEGER")?;
         // dialog_participants: роли (создатель группы — администратор)
         ensure_column(&conn, "dialog_participants", "is_admin", "INTEGER NOT NULL DEFAULT 0")?;
 
@@ -944,10 +965,35 @@ impl Database {
         media_path: Option<&str>,
         media_type: Option<&str>,
     ) -> Result<i64> {
+        self.save_message_with_reply(
+            dialog_id,
+            sender_id,
+            text,
+            timestamp,
+            is_outgoing,
+            media_path,
+            media_type,
+            None,
+        )
+    }
+
+    /// Как [`Self::save_message`], но с ответом на другое сообщение.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_message_with_reply(
+        &self,
+        dialog_id: i64,
+        sender_id: i64,
+        text: &str,
+        timestamp: i64,
+        is_outgoing: bool,
+        media_path: Option<&str>,
+        media_type: Option<&str>,
+        reply_to_id: Option<i64>,
+    ) -> Result<i64> {
         let conn = self.get_conn()?;
         conn.execute(
-            "INSERT INTO messages (dialog_id, sender_id, text, timestamp, is_outgoing, media_path, media_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (dialog_id, sender_id, text, timestamp, is_outgoing, media_path, media_type, reply_to_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 dialog_id,
                 sender_id,
@@ -956,9 +1002,26 @@ impl Database {
                 if is_outgoing { 1 } else { 0 },
                 media_path,
                 media_type,
+                reply_to_id,
             ],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Проверяет, что `message_id` — живое сообщение того же диалога.
+    ///
+    /// Нужно перед сохранением ответа: иначе можно ответить на сообщение
+    /// из чужого диалога и вытащить его текст в цитате.
+    pub fn is_replyable_in_dialog(&self, message_id: i64, dialog_id: i64) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1 AND dialog_id = ?2 AND deleted = 0",
+                rusqlite::params![message_id, dialog_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 
     /// Сохраняет сообщение с медиа-вложением и возвращает его id.
@@ -1029,11 +1092,16 @@ impl Database {
         let offset = offset.max(0);
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, sender_id, text, timestamp, is_outgoing, read_status, delivered_status,
-                    media_path, media_type, media_size, media_name
-             FROM messages
-             WHERE dialog_id = ?1 AND deleted = 0
-             ORDER BY timestamp DESC
+            "SELECT m.id, m.sender_id, m.text, m.timestamp, m.is_outgoing, m.read_status,
+                    m.delivered_status, m.media_path, m.media_type, m.media_size, m.media_name,
+                    m.reply_to_id, m.edited_at,
+                    CASE WHEN r.deleted = 1 THEN NULL ELSE r.text END,
+                    CASE WHEN r.deleted = 1 THEN NULL ELSE r.sender_id END,
+                    r.media_path
+             FROM messages m
+             LEFT JOIN messages r ON r.id = m.reply_to_id
+             WHERE m.dialog_id = ?1 AND m.deleted = 0
+             ORDER BY m.timestamp DESC
              LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(rusqlite::params![dialog_id, limit, offset], |row| {
@@ -1049,6 +1117,11 @@ impl Database {
                 media_type: row.get(8)?,
                 media_size: row.get(9)?,
                 media_name: row.get(10)?,
+                reply_to_id: row.get(11)?,
+                edited_at: row.get(12)?,
+                reply_text: row.get(13)?,
+                reply_sender_id: row.get(14)?,
+                reply_is_media: row.get::<_, Option<String>>(15)?.is_some(),
             })
         })?;
         let mut msgs = Vec::new();
@@ -1094,11 +1167,15 @@ impl Database {
     }
 
     // === Редактирование и удаление ===
-    // Пока не вызываются: в TL-протоколе нет конструкторов EditMessage/DeleteMessage.
-    // Оставлены как задел, схема (edited_at, deleted) их уже поддерживает.
 
-    #[allow(dead_code)]
-    pub fn edit_message(&self, message_id: i64, user_id: i64, new_text: &str) -> Result<()> {
+    /// Меняет текст своего сообщения и возвращает время правки (unix seconds).
+    ///
+    /// Ошибка, если сообщение не найдено, уже удалено или принадлежит другому
+    /// пользователю.
+    pub fn edit_message(&self, message_id: i64, user_id: i64, new_text: &str) -> Result<i64> {
+        if new_text.trim().is_empty() {
+            return Err(anyhow!("Message text is empty"));
+        }
         let conn = self.get_conn()?;
         // Проверяем, что пользователь является отправителем и сообщение не удалено
         let mut stmt = conn.prepare("SELECT sender_id FROM messages WHERE id = ?1 AND deleted = 0")?;
@@ -1106,6 +1183,7 @@ impl Database {
         if sender_id != user_id {
             return Err(anyhow!("You are not the sender of this message"));
         }
+        drop(stmt);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1114,10 +1192,10 @@ impl Database {
             "UPDATE messages SET text = ?1, edited_at = ?2 WHERE id = ?3",
             rusqlite::params![new_text, now, message_id],
         )?;
-        Ok(())
+        Ok(now)
     }
 
-    #[allow(dead_code)]
+    /// Мягко удаляет своё сообщение (`deleted = 1`), история его больше не отдаёт.
     pub fn delete_message(&self, message_id: i64, user_id: i64) -> Result<()> {
         let conn = self.get_conn()?;
         // Проверяем, что пользователь является отправителем и сообщение не удалено
@@ -1126,11 +1204,33 @@ impl Database {
         if sender_id != user_id {
             return Err(anyhow!("You are not the sender of this message"));
         }
+        drop(stmt);
         conn.execute(
             "UPDATE messages SET deleted = 1 WHERE id = ?1",
             rusqlite::params![message_id],
         )?;
         Ok(())
+    }
+
+    /// Метаданные сообщения, нужные для рассылки правки/удаления.
+    pub fn get_message_meta(&self, message_id: i64) -> Result<Option<MessageMeta>> {
+        let conn = self.get_conn()?;
+        let found = conn
+            .query_row(
+                "SELECT dialog_id, sender_id, text, media_path
+                 FROM messages WHERE id = ?1 AND deleted = 0",
+                rusqlite::params![message_id],
+                |row| {
+                    Ok(MessageMeta {
+                        dialog_id: row.get(0)?,
+                        sender_id: row.get(1)?,
+                        text: row.get(2)?,
+                        is_media: row.get::<_, Option<String>>(3)?.is_some(),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(found)
     }
 
     // ===== СТАТУСЫ ПОЛЬЗОВАТЕЛЕЙ =====

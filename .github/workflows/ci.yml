@@ -114,7 +114,9 @@ jobs:
 
       - name: Start server
         run: |
-          ./target/debug/kosta-server > server.log 2>&1 &
+          # Лимиты отключены только в CI: smoke и e2e создают много аккаунтов
+          # с одного IP и иначе упираются в 10 авторизаций в минуту.
+          KOSTA_RATE_LIMIT_DISABLED=1 ./target/debug/kosta-server > server.log 2>&1 &
           for _ in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8081/health > /dev/null; then
               echo "server is up"
@@ -131,6 +133,9 @@ jobs:
 
       - name: Web API and WebSocket smoke
         run: node scripts/smoke.mjs --phone=+79990000001
+
+      - name: Replies, editing and deletion e2e
+        run: node scripts/messages.mjs
 
       - name: UI is served
         run: curl -sf http://127.0.0.1:8081/ | grep -q "KoSta"

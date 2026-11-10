@@ -17,3 +17,5 @@ web-ui/.vite/
 
 # Артефакты нагрузочных тестов (scripts/load.mjs)
 /.loadtest/
+# Артефакты сквозных тестов (scripts/messages.mjs)
+/.e2e/

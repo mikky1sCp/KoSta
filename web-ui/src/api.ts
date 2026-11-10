@@ -292,6 +292,21 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       return request<ChatDetails>(`/chats/${encodeURIComponent(String(chatId))}`);
     },
 
+    /** Правка своего сообщения; остальные подписчики получают WS-событие. */
+    editMessage(messageId: number, text: string): Promise<unknown> {
+      return request<unknown>(`/messages/${encodeURIComponent(String(messageId))}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ text }),
+      });
+    },
+
+    /** Удаление своего сообщения (мягкое: из истории пропадает). */
+    deleteMessage(messageId: number): Promise<unknown> {
+      return request<unknown>(`/messages/${encodeURIComponent(String(messageId))}`, {
+        method: 'DELETE',
+      });
+    },
+
     createPrivate(phone: string): Promise<ChatDetails> {
       return request<ChatDetails>('/chats/private', {
         method: 'POST',

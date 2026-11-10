@@ -372,6 +372,11 @@ pub async fn get_history(
                         media_type: row.media_type,
                         media_size: row.media_size,
                         is_media,
+                        reply_to_id: row.reply_to_id,
+                        reply_to_text: row.reply_text,
+                        reply_to_sender_id: row.reply_sender_id,
+                        reply_to_is_media: row.reply_is_media,
+                        edited_at: row.edited_at,
                     }
                 })
                 .collect();
@@ -905,6 +910,11 @@ pub async fn upload_media(
         media_type: Some(mime),
         media_size: Some(size),
         is_media: true,
+        reply_to_id: None,
+        reply_to_text: None,
+        reply_to_sender_id: None,
+        reply_to_is_media: false,
+        edited_at: None,
     }))
 }
 
@@ -1013,6 +1023,134 @@ pub async fn mark_chat_read(
     state.broadcast_to_dialog(dialog_id, &event, None);
 
     Ok(HttpResponse::Ok().json(json!({ "marked": marked })))
+}
+
+/// Тело `PATCH /api/messages/{id}`.
+#[derive(Debug, serde::Deserialize)]
+pub struct EditMessageBody {
+    pub text: String,
+}
+
+/// Редактирование своего сообщения: `PATCH /api/messages/{id}`.
+///
+/// Правит только автор; подписчикам диалога уходит `message_edited`,
+/// чтобы открытые клиенты обновили текст без перезагрузки истории.
+pub async fn edit_message(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+    body: web::Json<EditMessageBody>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let message_id = match path_id(&path, "id сообщения") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let text = body.text.trim();
+    if text.is_empty() {
+        return Ok(bad_request("message text is empty"));
+    }
+    if text.chars().count() > MAX_MEDIA_CAPTION_CHARS {
+        return Ok(bad_request("message text is too long (max 4096 characters)"));
+    }
+
+    let meta = match db.get_message_meta(message_id) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => return Ok(not_found("message not found")),
+        Err(e) => return Ok(server_error("failed to load message", e)),
+    };
+    let participants = match dialog_participants(&db, meta.dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+    if meta.sender_id != user_id {
+        return Ok(forbidden("only the sender can edit the message"));
+    }
+
+    let edited_at = match db.edit_message(message_id, user_id, text) {
+        Ok(edited_at) => edited_at,
+        Err(e) => return Ok(server_error("failed to edit message", e)),
+    };
+
+    let event = json!({
+        "type": "message_edited",
+        "payload": {
+            "dialog_id": meta.dialog_id,
+            "message_id": message_id,
+            "text": text,
+            "edited_at": edited_at,
+        }
+    })
+    .to_string();
+    state.broadcast_to_dialog(meta.dialog_id, &event, None);
+
+    Ok(HttpResponse::Ok().json(json!({ "ok": true, "edited_at": edited_at })))
+}
+
+/// Удаление своего сообщения: `DELETE /api/messages/{id}`.
+///
+/// Мягкое удаление: строка остаётся в БД (`deleted = 1`), история её больше
+/// не отдаёт. Подписчикам уходит `message_deleted`, и клиенты убирают пузырь.
+pub async fn delete_message(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let message_id = match path_id(&path, "id сообщения") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let meta = match db.get_message_meta(message_id) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => return Ok(not_found("message not found")),
+        Err(e) => return Ok(server_error("failed to load message", e)),
+    };
+    let participants = match dialog_participants(&db, meta.dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+    if meta.sender_id != user_id {
+        return Ok(forbidden("only the sender can delete the message"));
+    }
+
+    if let Err(e) = db.delete_message(message_id, user_id) {
+        return Ok(server_error("failed to delete message", e));
+    }
+
+    let event = json!({
+        "type": "message_deleted",
+        "payload": {
+            "dialog_id": meta.dialog_id,
+            "message_id": message_id,
+        }
+    })
+    .to_string();
+    state.broadcast_to_dialog(meta.dialog_id, &event, None);
+
+    Ok(HttpResponse::Ok().json(json!({ "ok": true })))
 }
 
 #[cfg(test)]

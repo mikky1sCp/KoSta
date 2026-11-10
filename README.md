@@ -69,8 +69,9 @@ contract is described in [docs/web-api.md](docs/web-api.md).
 
 UI features: login/registration, chat list with search and unread badges, private
 chats and groups, group administration (admin-only add/remove, rename, leave),
-online status, typing indicators, read receipts, message history pagination,
-photo and file attachments, light/dark theme and a responsive mobile layout.
+online status, typing indicators, read receipts, replies with quotes, message
+editing and deletion, message history pagination, photo and file attachments,
+light/dark theme and a responsive mobile layout.
 
 ## End-to-end checks
 
@@ -85,6 +86,12 @@ Web API and WebSocket (token auth, authorization checks, message delivery, logou
 
 ```bash
 node scripts/smoke.mjs --phone=+79990000000
+```
+
+Replies, editing and deletion (quotes, `message_edited`/`message_deleted`, permissions):
+
+```bash
+node scripts/messages.mjs
 ```
 
 MTProto garbage resistance (malformed abridged frames must not crash the server):

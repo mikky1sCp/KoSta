@@ -18,6 +18,15 @@ interface ChatPanelProps {
   wsStatus: WsStatus;
   /** id первого сообщения непрочитанного блока — над ним рисуем разделитель. */
   unreadDividerMessageId: number | null;
+  /** id текущего пользователя для подписи цитат. */
+  myUserId: number;
+  /** Сообщение, на которое сейчас отвечаем (или null). */
+  replyTo: { author: string; text: string } | null;
+  /** Сообщение, которое сейчас редактируем (или null). */
+  editing: { text: string } | null;
+  onCancelReply: () => void;
+  onCancelEdit: () => void;
+  onEditSubmit: (text: string) => void;
   onBack: () => void;
   onOpenInfo: () => void;
   onSend: (text: string) => boolean;
@@ -31,6 +40,9 @@ interface ChatPanelProps {
   onOpenImage: (message: UiMessage, url: string) => void;
   onDownload: (message: UiMessage) => Promise<void>;
   onCopyMessage: (message: UiMessage) => void;
+  onReplyMessage: (message: UiMessage) => void;
+  onEditMessage: (message: UiMessage) => void;
+  onDeleteMessage: (message: UiMessage) => void;
   initialDraft: string;
   onDraftChange: (chatId: number, text: string) => void;
   className?: string;
@@ -76,6 +88,12 @@ export function ChatPanel({
   typingLabel,
   wsStatus,
   unreadDividerMessageId,
+  myUserId,
+  replyTo,
+  editing,
+  onCancelReply,
+  onCancelEdit,
+  onEditSubmit,
   onBack,
   onOpenInfo,
   onSend,
@@ -85,6 +103,9 @@ export function ChatPanel({
   onOpenImage,
   onDownload,
   onCopyMessage,
+  onReplyMessage,
+  onEditMessage,
+  onDeleteMessage,
   initialDraft,
   onDraftChange,
   className,
@@ -125,11 +146,15 @@ export function ChatPanel({
             isGroup={chat.is_group}
             participants={details?.participants ?? []}
             api={api}
+            myUserId={myUserId}
             unreadDividerMessageId={unreadDividerMessageId}
             onLoadMore={onLoadMore}
             onOpenImage={onOpenImage}
             onDownload={onDownload}
             onCopyMessage={onCopyMessage}
+            onReplyMessage={onReplyMessage}
+            onEditMessage={onEditMessage}
+            onDeleteMessage={onDeleteMessage}
           />
 
           <Composer
@@ -137,6 +162,11 @@ export function ChatPanel({
             chatId={chat.id}
             connected={wsStatus === 'connected'}
             initialDraft={initialDraft}
+            replyTo={replyTo}
+            editing={editing}
+            onCancelReply={onCancelReply}
+            onCancelEdit={onCancelEdit}
+            onEditSubmit={onEditSubmit}
             onDraftChange={onDraftChange}
             onSend={onSend}
             onUpload={onUpload}

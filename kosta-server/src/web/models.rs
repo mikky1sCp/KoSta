@@ -77,6 +77,16 @@ pub struct MessageItem {
     pub media_type: Option<String>,
     pub media_size: Option<i64>,
     pub is_media: bool,
+    /// Сообщение, на которое это отвечает (цитата), если есть.
+    pub reply_to_id: Option<i64>,
+    /// Текст цитируемого сообщения; `None`, если оно удалено.
+    pub reply_to_text: Option<String>,
+    /// Автор цитируемого сообщения.
+    pub reply_to_sender_id: Option<i64>,
+    /// Было ли цитируемое сообщение медиа (тогда текст может быть подписью).
+    pub reply_to_is_media: bool,
+    /// Время последнего редактирования, unix seconds.
+    pub edited_at: Option<i64>,
 }
 
 /// Ответ `GET /api/me`.
@@ -293,6 +303,11 @@ mod tests {
             media_type: Some("image/png".to_string()),
             media_size: Some(1024),
             is_media: true,
+            reply_to_id: None,
+            reply_to_text: None,
+            reply_to_sender_id: None,
+            reply_to_is_media: false,
+            edited_at: None,
         };
         let value = serde_json::to_value(item).unwrap();
         assert_eq!(value["media_name"], "фото.png");
@@ -320,6 +335,11 @@ mod tests {
             media_type: None,
             media_size: None,
             is_media: false,
+            reply_to_id: None,
+            reply_to_text: None,
+            reply_to_sender_id: None,
+            reply_to_is_media: false,
+            edited_at: None,
         };
         let value = serde_json::to_value(item).unwrap();
         assert!(value["media_name"].is_null());

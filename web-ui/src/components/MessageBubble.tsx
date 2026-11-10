@@ -1,4 +1,4 @@
-import { Check, CheckCheck, Clock3, Copy } from 'lucide-react';
+import { Check, CheckCheck, Clock3, Copy, Pencil, Reply, Trash2 } from 'lucide-react';
 import type { Api } from '../api';
 import type { UiMessage } from '../types';
 import { formatTime } from '../utils/format';
@@ -31,12 +31,17 @@ interface MessageBubbleProps {
   senderPhone: string | null;
   /** Устойчивый цвет имени отправителя в группе (есть у каждого участника). */
   senderColor?: string;
+  /** Имя автора цитируемого сообщения. */
+  replyAuthor: string | null;
   tail: boolean;
   inGroup: boolean;
   api: Api;
   onOpenImage: (message: UiMessage, url: string) => void;
   onDownload: (message: UiMessage) => Promise<void>;
   onCopyMessage: (message: UiMessage) => void;
+  onReplyMessage: (message: UiMessage) => void;
+  onEditMessage: (message: UiMessage) => void;
+  onDeleteMessage: (message: UiMessage) => void;
 }
 
 export function MessageBubble({
@@ -45,17 +50,33 @@ export function MessageBubble({
   showSender,
   senderPhone,
   senderColor,
+  replyAuthor,
   tail,
   inGroup,
   api,
   onOpenImage,
   onDownload,
   onCopyMessage,
+  onReplyMessage,
+  onEditMessage,
+  onDeleteMessage,
 }: MessageBubbleProps) {
   const hasMedia = message.is_media === true;
   const hasImage = hasMedia && isImageMimeType(message.media_type);
   const caption = message.text.trim();
   const showCaption = caption.length > 0;
+  const hasReply = message.reply_to_id != null;
+  // Редактировать можно только текст (у медиа меняется подпись, но это уже
+  // другой сценарий), удалять — любое своё сообщение.
+  const canEdit = isOwn && showCaption && !hasMedia && !message.pending;
+  const canDelete = isOwn && !message.pending;
+
+  const actionClass = cn(
+    'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
+    isOwn
+      ? 'text-white/80 hover:bg-black/25 hover:text-white'
+      : 'text-muted hover:bg-panel-strong hover:text-ink',
+  );
 
   return (
     <div
@@ -64,7 +85,7 @@ export function MessageBubble({
         isOwn ? 'justify-end' : 'justify-start',
       )}
     >
-      <div className="flex max-w-[86%] flex-col md:max-w-[72%]">
+      <div className="relative flex max-w-[86%] flex-col md:max-w-[72%]">
         {inGroup && !isOwn && showSender && senderPhone && (
           <span
             className="mb-1 ml-1.5 truncate text-[11px] font-semibold"
@@ -84,24 +105,88 @@ export function MessageBubble({
             message.pending && 'opacity-80',
           )}
         >
-          {showCaption && (
+          {/* Панель действий: видна при наведении или фокусе с клавиатуры. */}
+          <div
+            className={cn(
+              'absolute -top-3 z-20 flex items-center gap-0.5 rounded-xl border border-line bg-panel px-1 py-0.5 opacity-0 shadow-md transition-opacity focus-within:opacity-100 group-hover:opacity-100',
+              isOwn ? 'right-1' : 'left-1',
+            )}
+          >
             <button
               type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onCopyMessage(message);
-              }}
-              aria-label="Копировать текст"
-              title="Копировать текст"
+              onClick={() => onReplyMessage(message)}
+              aria-label="Ответить"
+              title="Ответить"
+              className={actionClass}
+            >
+              <Reply className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            {showCaption && (
+              <button
+                type="button"
+                onClick={() => onCopyMessage(message)}
+                aria-label="Копировать текст"
+                title="Копировать текст"
+                className={actionClass}
+              >
+                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => onEditMessage(message)}
+                aria-label="Редактировать"
+                title="Редактировать"
+                className={actionClass}
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+            {canDelete && (
+              <button
+                type="button"
+                onClick={() => onDeleteMessage(message)}
+                aria-label="Удалить"
+                title="Удалить"
+                className={cn(actionClass, 'hover:text-danger')}
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+
+          {hasReply && (
+            <div
               className={cn(
-                'absolute right-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-lg opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100',
+                'mb-1.5 rounded-lg border-l-2 px-2 py-1',
                 isOwn
-                  ? 'bg-black/25 text-white hover:bg-black/35'
-                  : 'bg-panel-strong text-muted hover:text-ink',
+                  ? 'border-white/50 bg-black/15'
+                  : 'border-accent bg-accent-soft',
+                hasMedia && 'mx-0.5 mt-0.5',
               )}
             >
-              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
+              <p
+                className={cn(
+                  'truncate text-[11px] font-semibold',
+                  isOwn ? 'text-white/90' : 'text-accent-strong',
+                )}
+              >
+                {replyAuthor ?? 'Сообщение'}
+              </p>
+              <p
+                className={cn(
+                  'truncate text-[11px]',
+                  isOwn ? 'text-white/75' : 'text-muted',
+                )}
+              >
+                {message.reply_to_text?.trim()
+                  ? message.reply_to_text
+                  : message.reply_to_is_media
+                    ? 'Вложение'
+                    : 'Сообщение удалено'}
+              </p>
+            </div>
           )}
 
           {hasMedia &&
@@ -125,8 +210,6 @@ export function MessageBubble({
               className={cn(
                 'whitespace-pre-wrap break-words text-pretty text-sm leading-relaxed',
                 hasMedia && 'px-2 pt-1.5',
-                // Отступ под кнопку «Копировать» (не перекрывает текст на ховере).
-                showCaption && 'pr-9',
               )}
             >
               {message.text}
@@ -140,6 +223,9 @@ export function MessageBubble({
               isOwn ? 'text-white/75' : 'text-muted',
             )}
           >
+            {message.edited_at != null && (
+              <span className="mr-0.5 italic opacity-90">изменено</span>
+            )}
             <span className="tabular-nums">{formatTime(message.timestamp)}</span>
             {isOwn && <OutgoingStatus message={message} />}
           </div>
