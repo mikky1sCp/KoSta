@@ -16,7 +16,12 @@ type AuthMode = 'login' | 'register';
 interface AuthScreenProps {
   loading: boolean;
   error: string;
-  onSubmit: (phone: string, password: string, register: boolean) => Promise<void>;
+  onSubmit: (
+    phone: string,
+    password: string,
+    register: boolean,
+    remember: boolean,
+  ) => Promise<void>;
 }
 
 const PHONE_PATTERN = /^\+?\d{5,20}$/;
@@ -26,6 +31,7 @@ export function AuthScreen({ loading, error, onSubmit }: AuthScreenProps) {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [localError, setLocalError] = useState('');
 
   const isRegister = mode === 'register';
@@ -63,7 +69,7 @@ export function AuthScreen({ loading, error, onSubmit }: AuthScreenProps) {
       return;
     }
     setLocalError('');
-    await onSubmit(phone.trim(), password, isRegister);
+    await onSubmit(phone.trim(), password, isRegister, remember);
   }
 
   const message = localError || error;
@@ -160,6 +166,17 @@ export function AuthScreen({ loading, error, onSubmit }: AuthScreenProps) {
               }
             />
 
+            <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(event) => setRemember(event.target.checked)}
+                disabled={loading}
+                className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)]"
+              />
+              Запомнить меня на этом устройстве
+            </label>
+
             <Button type="submit" fullWidth loading={loading}>
               {isRegister ? 'Зарегистрироваться' : 'Войти'}
             </Button>
@@ -177,8 +194,9 @@ export function AuthScreen({ loading, error, onSubmit }: AuthScreenProps) {
         </div>
 
         <p className="mt-4 text-center text-xs text-muted">
-          Пароль передаётся по защищённому каналу, токен хранится только в памяти
-          вкладки.
+          Пароль передаётся по защищённому каналу. С галочкой «Запомнить меня»
+          сессия сохраняется на этом устройстве на 7 дней; без неё — живёт
+          только до закрытия вкладки.
         </p>
       </div>
     </div>

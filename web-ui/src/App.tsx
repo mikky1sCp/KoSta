@@ -15,6 +15,7 @@ import { downloadMedia, messagePreview } from './utils/media';
 import { useTheme } from './hooks/useTheme';
 import { useToasts } from './hooks/useToasts';
 import { useDrafts } from './hooks/useDrafts';
+import { clearStoredSession, loadStoredSession, saveStoredSession } from './utils/session';
 import { AuthScreen } from './components/AuthScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
@@ -35,6 +36,8 @@ interface Session {
   token: string;
   userId: number;
   phone: string;
+  /** Сохранять ли сессию в localStorage («Запомнить меня»). */
+  persist: boolean;
 }
 
 type ModalKind = 'new-chat' | 'new-group' | 'info' | 'profile';
@@ -165,7 +168,10 @@ export function App() {
   const { toasts, remove, toast } = useToasts();
   const drafts = useDrafts();
 
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<Session | null>(() => {
+    const stored = loadStoredSession();
+    return stored ? { ...stored, persist: true } : null;
+  });
   const [me, setMe] = useState<Me | null>(null);
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [chatsLoading, setChatsLoading] = useState(false);
@@ -380,6 +386,7 @@ export function App() {
       return;
     }
     sessionRef.current = null;
+    clearStoredSession();
     setSession(null);
     wsRef.current?.close();
     resetSessionState();
@@ -387,7 +394,7 @@ export function App() {
   }, [resetSessionState, toast]);
 
   const handleAuth = useCallback(
-    async (phone: string, password: string, register: boolean) => {
+    async (phone: string, password: string, register: boolean, remember: boolean) => {
       setAuthLoading(true);
       setAuthError('');
       try {
@@ -400,7 +407,17 @@ export function App() {
           token: response.token,
           userId: response.user_id,
           phone,
+          persist: remember,
         };
+        if (remember) {
+          saveStoredSession({
+            token: nextSession.token,
+            userId: nextSession.userId,
+            phone: nextSession.phone,
+          });
+        } else {
+          clearStoredSession();
+        }
         sessionRef.current = nextSession;
         setSession(nextSession);
         setMe({
@@ -425,6 +442,7 @@ export function App() {
   const handleLogout = useCallback(() => {
     const current = sessionRef.current;
     sessionRef.current = null;
+    clearStoredSession();
     setSession(null);
     wsRef.current?.close();
     resetSessionState();
@@ -1274,6 +1292,19 @@ export function App() {
           theme={theme}
           onThemeChange={setTheme}
           wsStatus={wsStatus}
+          sessionPersisted={session.persist}
+          onTogglePersistence={(persist) => {
+            setSession((current) => (current ? { ...current, persist } : current));
+            if (persist) {
+              saveStoredSession({
+                token: session.token,
+                userId: session.userId,
+                phone: session.phone,
+              });
+            } else {
+              clearStoredSession();
+            }
+          }}
           onProfileChange={(next) => {
             setMe(next);
             // Имя влияет на заголовки личных чатов — обновляем список.

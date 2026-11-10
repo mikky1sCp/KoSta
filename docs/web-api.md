@@ -50,6 +50,11 @@ Revokes the token and closes the user's WebSocket connections. Returns
 `display_name` is `null` until the user sets one; clients then show the phone.
 `has_avatar` tells whether `GET /api/avatars/{user_id}` returns an image.
 
+The web client stores the token in memory by default and, when the user enables
+"Запомнить меня" (on by default at login), also in `localStorage` under
+`kosta.session.v1` with a 7-day expiry that mirrors the server-side token TTL.
+Logging out, or any `401`, clears that entry.
+
 ### PATCH /api/me
 
 Update your own profile. Body: `{"display_name": "Аня"}` (up to 64 characters;

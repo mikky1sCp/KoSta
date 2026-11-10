@@ -124,6 +124,10 @@ KOSTA_EXPECT_IDLE_TIMEOUT=1 node scripts/limits.mjs
   The response contains a session token (32 random bytes, hex); the database stores only
   its SHA-256. The token lives for 7 days and can be revoked with `POST /api/logout`
   (which also closes that user's WebSocket connections).
+  The web client keeps the token in memory by default; with "Запомнить меня"
+  (remember me, enabled by default on the login screen) it is also stored in
+  `localStorage` for 7 days so a page reload does not require signing in again.
+  The profile modal has the same toggle, and logging out erases the stored token.
 - **Binary protocol (MTProto 2.0)**: a DH handshake with a 64-bit `pq` that the
   client factors (Pollard rho), AES-GCM-encrypted inner data, and an Ed25519
   server key pinned via `server_public_key.der` (signature and fingerprint are

@@ -17,6 +17,9 @@ interface ProfileModalProps {
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
   wsStatus: WsStatus;
+  /** Сохранена ли сессия на этом устройстве. */
+  sessionPersisted: boolean;
+  onTogglePersistence: (persist: boolean) => void;
   /** Профиль обновился (имя или аватар) — приложение обновляет состояние. */
   onProfileChange: (me: Me) => void;
   onLogout: () => void;
@@ -48,6 +51,8 @@ export function ProfileModal({
   theme,
   onThemeChange,
   wsStatus,
+  sessionPersisted,
+  onTogglePersistence,
   onProfileChange,
   onLogout,
   onClose,
@@ -251,10 +256,28 @@ export function ProfileModal({
           </div>
         </section>
 
+        <section>
+          <p className="mb-1.5 text-xs font-medium text-muted">Сессия</p>
+          <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line bg-panel-soft px-3 py-2.5">
+            <input
+              type="checkbox"
+              checked={sessionPersisted}
+              onChange={(event) => onTogglePersistence(event.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)]"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm text-ink">Запомнить меня</span>
+              <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                Сессия сохраняется на этом устройстве на 7 дней и переживает
+                перезагрузку. На общем компьютере лучше выключить.
+              </span>
+            </span>
+          </label>
+        </section>
+
         <p className="rounded-xl bg-panel-soft px-3 py-2.5 text-[11px] leading-relaxed text-muted">
-          Токен сессии хранится только в памяти вкладки. После перезагрузки
-          страницы потребуется войти заново — это защищает аккаунт на общих
-          устройствах.
+          Выход из аккаунта отзывает токен на сервере и стирает его с этого
+          устройства.
         </p>
       </div>
     </Modal>
