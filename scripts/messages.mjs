@@ -302,6 +302,46 @@ const missingEdit = await req('/api/messages/99999999', {
 });
 check('правка несуществующего сообщения -> 404', missingEdit.status === 404, `status ${missingEdit.status}`);
 
+// ---------- 5. Голосовое сообщение (аудио-вложение) ----------
+// Содержимое не проверяется сервером: важен MIME из заголовка.
+const voiceBytes = Buffer.from('1a45dfa3a3428681', 'hex');
+const voiceUpload = await fetch(
+  `${BASE}/api/chats/${dialogId}/media?name=${encodeURIComponent('voice-1.webm')}`,
+  {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tokenA}`, 'Content-Type': 'audio/webm' },
+    body: voiceBytes,
+  },
+);
+const voiceBody = await voiceUpload.json().catch(() => null);
+check(
+  'голосовое: загрузка audio/webm создаёт сообщение',
+  voiceUpload.status === 200 &&
+    voiceBody?.is_media === true &&
+    voiceBody?.media_type === 'audio/webm',
+  `status ${voiceUpload.status}, ${JSON.stringify(voiceBody)}`,
+);
+
+const voiceDownload = await fetch(`${BASE}/api/media/${voiceBody?.id}`, {
+  headers: { Authorization: `Bearer ${tokenB}` },
+});
+check(
+  'голосовое: скачивание с корректным Content-Type',
+  voiceDownload.status === 200 &&
+    (voiceDownload.headers.get('content-type') ?? '').startsWith('audio/webm'),
+  `status ${voiceDownload.status}, type ${voiceDownload.headers.get('content-type')}`,
+);
+
+const badAudio = await fetch(
+  `${BASE}/api/chats/${dialogId}/media?name=${encodeURIComponent('x.mid')}`,
+  {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tokenA}`, 'Content-Type': 'audio/midi' },
+    body: Buffer.from([0x4d, 0x54, 0x68, 0x64]),
+  },
+);
+check('голосовое: неподдерживаемый аудио-тип -> 415', badAudio.status === 415, `status ${badAudio.status}`);
+
 wsA.close();
 wsB.close();
 wsC.close();

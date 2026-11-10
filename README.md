@@ -71,9 +71,9 @@ UI features: login/registration, profile with display name and avatar, chat list
 search and unread badges, private chats and groups, group administration
 (admin-only add/remove, rename, leave), online status, typing indicators, read
 receipts, replies with quotes, message editing and deletion, message search inside
-a chat, emoji picker, desktop notifications with a sound for incoming messages,
-message history pagination, photo and file attachments, light/dark theme and a
-responsive mobile layout.
+a chat, emoji picker, voice messages, desktop notifications with a sound for
+incoming messages, message history pagination, photo and file attachments,
+light/dark theme and a responsive mobile layout.
 
 ## End-to-end checks
 
@@ -229,7 +229,8 @@ max_upload_mb = 25
 The database schema is migrated on startup (new columns for media, group admins and
 session timestamps), foreign keys are enabled, and SQLite runs in WAL mode.
 Uploaded files are stored on disk under `media/<dialog_id>/` with random names; the
-allowed MIME types are PNG/JPEG/WebP/GIF, PDF, plain text, ZIP and MP4. Files are
+allowed MIME types are PNG/JPEG/WebP/GIF, PDF, plain text, ZIP, MP4 and audio
+(WebM, OGG, MP3, M4A, WAV). Files are
 served only to dialog participants through an authenticated endpoint.
 
 ## Layout

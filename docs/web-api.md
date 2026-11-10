@@ -264,8 +264,9 @@ Uploads a file and creates a message in the dialog atomically.
   `send_message`).
 - Limits: file size up to `media.max_upload_mb` (default 25 MiB); allowed MIME
   types: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`,
-  `text/plain`, `application/zip`, `video/mp4`. MIME types are validated; other
-  types return `415`.
+  `text/plain`, `application/zip`, `video/mp4`, plus audio for voice messages:
+  `audio/webm`, `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`. MIME types are
+  validated; other types return `415`.
 - Only dialog participants may upload (`403` otherwise, `404` for an unknown
   dialog). Rate-limited like the rest of the HTTP API.
 - `200` response — the created `MessageItem` (see `/api/history`), with

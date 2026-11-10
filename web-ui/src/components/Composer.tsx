@@ -5,7 +5,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { Paperclip, Send, Smile, WifiOff, X } from 'lucide-react';
+import { Paperclip, Mic, Send, Smile, Square, Trash2, WifiOff, X } from 'lucide-react';
 import { MEDIA_ACCEPT } from '../api';
 import { formatBytes } from '../utils/format';
 import {
@@ -64,6 +64,16 @@ export function Composer({
   const [progress, setProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // Запись голосового сообщения.
+  const [recording, setRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [recordError, setRecordError] = useState('');
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
+  /** Отправлять ли запись по завершении (false — отмена). */
+  const sendOnStopRef = useRef(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -218,8 +228,7 @@ export function Composer({
   }
 
   /** Вставляет эмодзи в позицию курсора (а не в конец строки). */
-  function insertEmoji(emoji: string) {
-    const textarea = textareaRef.current;
+  function insertEmoji(emoji: string) {    const textarea = textareaRef.current;
     const value = textRef.current;
     const start = textarea?.selectionStart ?? value.length;
     const end = textarea?.selectionEnd ?? value.length;
@@ -237,6 +246,136 @@ export function Composer({
       const caret = start + emoji.length;
       textarea.setSelectionRange(caret, caret);
     });
+  }
+
+  // ---------- голосовые сообщения ----------
+
+  const MAX_RECORD_SECONDS = 300;
+
+  function stopTracks() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  /** Освобождает микрофон и сбрасывает состояние записи. */
+  function resetRecording() {
+    stopTracks();
+    recorderRef.current = null;
+    chunksRef.current = [];
+    setRecording(false);
+    setRecordSeconds(0);
+  }
+
+  async function startRecording() {
+    if (
+      typeof MediaRecorder === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
+      setRecordError('Запись голоса не поддерживается этим браузером.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      // Chrome/Firefox пишут webm/opus, Safari — mp4/aac.
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4',
+      ];
+      const mimeType =
+        candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+      recorder.onstop = () => {
+        void finalizeRecording();
+      };
+      recorder.start();
+      setRecordError('');
+      setRecording(true);
+      setRecordSeconds(0);
+      timerRef.current = window.setInterval(() => {
+        setRecordSeconds((current) => {
+          if (current + 1 >= MAX_RECORD_SECONDS) {
+            stopRecording(true);
+            return current;
+          }
+          return current + 1;
+        });
+      }, 1000);
+    } catch {
+      setRecordError('Нет доступа к микрофону. Разрешите его в настройках браузера.');
+      resetRecording();
+    }
+  }
+
+  /** Останавливает запись; `send` решает, отправлять её или выбросить. */
+  function stopRecording(send: boolean) {
+    const recorder = recorderRef.current;
+    sendOnStopRef.current = send;
+    if (!recorder || recorder.state === 'inactive') {
+      resetRecording();
+      return;
+    }
+    recorder.stop();
+    // Микрофон отпускаем сразу, не дожидаясь сборки blob.
+    stopTracks();
+  }
+
+  async function finalizeRecording() {
+    const shouldSend = sendOnStopRef.current;
+    const recorder = recorderRef.current;
+    const recordedMime = recorder?.mimeType ?? 'audio/webm';
+    const chunks = chunksRef.current;
+    resetRecording();
+
+    if (!shouldSend || chunks.length === 0) {
+      return;
+    }
+    // Сервер ждёт точный MIME без параметров (`audio/webm`, не `;codecs=opus`).
+    const type = recordedMime.split(';')[0].trim() || 'audio/webm';
+    const extension =
+      type === 'audio/mp4' ? 'm4a' : type === 'audio/ogg' ? 'ogg' : 'webm';
+    const blob = new Blob(chunks, { type });
+    const file = new File([blob], `voice-${Date.now()}.${extension}`, { type });
+    try {
+      const uploaded = await onUpload(file, '', () => {});
+      if (!uploaded) {
+        setRecordError('Не удалось отправить голосовое сообщение.');
+      }
+    } catch {
+      setRecordError('Не удалось отправить голосовое сообщение.');
+    }
+  }
+
+  // Микрофон не должен остаться включённым при уходе с чата.
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
+  function formatDuration(totalSeconds: number): string {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
   }
 
   const sendLabel = editing
@@ -275,6 +414,48 @@ export function Composer({
             <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             Соединение потеряно. Переподключаемся…
           </div>
+        )}
+
+        {recording && (
+          <div className="mb-2 flex items-center gap-3 rounded-xl border border-danger/30 bg-danger/10 px-2.5 py-2">
+            <span className="relative flex h-3 w-3 shrink-0" aria-hidden="true">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger opacity-60" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-danger" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-ink">Идёт запись</p>
+              <p className="text-[11px] tabular-nums text-muted" role="status">
+                {formatDuration(recordSeconds)} · макс. {formatDuration(MAX_RECORD_SECONDS)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => stopRecording(false)}
+              aria-label="Отменить запись"
+              title="Отменить"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-panel-strong hover:text-danger"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => stopRecording(true)}
+              aria-label="Отправить голосовое"
+              title="Отправить"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors hover:bg-accent/90"
+            >
+              <Send className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+
+        {recordError && (
+          <p
+            role="alert"
+            className="mb-2 rounded-xl border border-danger/25 bg-danger/10 px-3 py-1.5 text-xs text-danger"
+          >
+            {recordError}
+          </p>
         )}
 
         {pendingFile && (
@@ -414,6 +595,26 @@ export function Composer({
             }
             className="kosta-scroll max-h-40 min-h-10 w-full resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-ink outline-none placeholder:text-muted"
           />
+
+          <button
+            type="button"
+            onClick={() => (recording ? stopRecording(true) : void startRecording())}
+            disabled={uploading || editing !== null}
+            aria-label={recording ? 'Завершить запись' : 'Записать голосовое'}
+            title={recording ? 'Завершить запись' : 'Голосовое сообщение'}
+            className={cn(
+              'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+              recording
+                ? 'bg-danger text-white hover:bg-danger/90'
+                : 'text-muted hover:bg-panel-strong hover:text-ink',
+            )}
+          >
+            {recording ? (
+              <Square className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <Mic className="h-4 w-4" aria-hidden="true" />
+            )}
+          </button>
 
           <button
             type="button"

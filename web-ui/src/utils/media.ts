@@ -2,10 +2,14 @@ import { MEDIA_MAX_BYTES, isAllowedMediaType, type Api } from '../api';
 import type { Message } from '../types';
 import { formatBytes } from './format';
 
-export type MediaKind = 'image' | 'video' | 'archive' | 'document' | 'file';
+export type MediaKind = 'image' | 'video' | 'audio' | 'archive' | 'document' | 'file';
 
 export function isImageMimeType(mime: string | null | undefined): boolean {
   return typeof mime === 'string' && mime.toLowerCase().startsWith('image/');
+}
+
+export function isAudioMimeType(mime: string | null | undefined): boolean {
+  return typeof mime === 'string' && mime.toLowerCase().startsWith('audio/');
 }
 
 export function isImageFile(file: File): boolean {
@@ -21,6 +25,9 @@ export function mediaKind(mime: string | null | undefined): MediaKind {
   if (type.startsWith('video/')) {
     return 'video';
   }
+  if (type.startsWith('audio/')) {
+    return 'audio';
+  }
   if (type === 'application/zip' || type === 'application/x-zip-compressed') {
     return 'archive';
   }
@@ -30,13 +37,15 @@ export function mediaKind(mime: string | null | undefined): MediaKind {
   return 'file';
 }
 
-/** Подпись типа вложения: «Изображение», «PDF», «Архив»… */
+/** Подпись типа вложения: «Изображение», «PDF», «Аудио»… */
 export function mediaTypeLabel(mime: string | null | undefined): string {
   switch (mediaKind(mime)) {
     case 'image':
       return 'Изображение';
     case 'video':
       return 'Видео';
+    case 'audio':
+      return 'Аудио';
     case 'archive':
       return 'Архив';
     case 'document':
@@ -64,7 +73,16 @@ export function messagePreview(
   if (name.length > 0) {
     return name;
   }
-  return mediaKind(message.media_type) === 'image' ? 'Фото' : 'Файл';
+  switch (mediaKind(message.media_type)) {
+    case 'image':
+      return 'Фото';
+    case 'audio':
+      return 'Голосовое сообщение';
+    case 'video':
+      return 'Видео';
+    default:
+      return 'Файл';
+  }
 }
 
 /** Клиентская проверка вложения до загрузки. `null` — файл можно отправлять. */
@@ -77,7 +95,7 @@ export function validateMediaFile(file: File): string | null {
   }
   const type = (file.type || '').toLowerCase();
   if (!isAllowedMediaType(type)) {
-    return 'Этот тип файла не поддерживается. Можно отправлять изображения (PNG, JPEG, WebP, GIF), PDF, TXT, ZIP и MP4.';
+    return 'Этот тип файла не поддерживается. Можно отправлять изображения (PNG, JPEG, WebP, GIF), PDF, TXT, ZIP, MP4 и аудио.';
   }
   return null;
 }

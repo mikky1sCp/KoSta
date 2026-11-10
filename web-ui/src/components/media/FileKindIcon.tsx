@@ -1,10 +1,11 @@
-import { File, FileArchive, FileImage, FileText, Film } from 'lucide-react';
+import { File, FileArchive, FileImage, FileText, Film, Music } from 'lucide-react';
 import { mediaKind, type MediaKind } from '../../utils/media';
 import { cn } from '../../utils/classNames';
 
 const ICONS: Record<MediaKind, typeof File> = {
   image: FileImage,
   video: Film,
+  audio: Music,
   archive: FileArchive,
   document: FileText,
   file: File,

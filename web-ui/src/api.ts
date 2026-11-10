@@ -24,6 +24,11 @@ export const MEDIA_ALLOWED_TYPES = [
   'text/plain',
   'application/zip',
   'video/mp4',
+  'audio/webm',
+  'audio/ogg',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/wav',
 ] as const;
 
 export type MediaMimeType = (typeof MEDIA_ALLOWED_TYPES)[number];
@@ -40,6 +45,11 @@ export const MEDIA_ACCEPT = [
   '.txt',
   '.zip',
   '.mp4',
+  '.webm',
+  '.ogg',
+  '.mp3',
+  '.m4a',
+  '.wav',
 ].join(',');
 
 /** Максимальная длина `name` в query (сервер: ≤ 128 символов). */

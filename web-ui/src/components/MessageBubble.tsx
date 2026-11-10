@@ -12,8 +12,9 @@ import {
 import type { Api } from '../api';
 import type { UiMessage } from '../types';
 import { formatTime } from '../utils/format';
-import { isImageMimeType } from '../utils/media';
+import { isAudioMimeType, isImageMimeType } from '../utils/media';
 import { cn } from '../utils/classNames';
+import { AudioAttachment } from './media/AudioAttachment';
 import { FileAttachment } from './media/FileAttachment';
 import { MediaImage } from './media/MediaImage';
 
@@ -73,6 +74,7 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const hasMedia = message.is_media === true;
   const hasImage = hasMedia && isImageMimeType(message.media_type);
+  const hasAudio = hasMedia && isAudioMimeType(message.media_type);
   const caption = message.text.trim();
   const showCaption = caption.length > 0;
   const hasReply = message.reply_to_id != null;
@@ -254,6 +256,8 @@ export function MessageBubble({
                   isOwn={isOwn}
                   onOpen={onOpenImage}
                 />
+              ) : hasAudio ? (
+                <AudioAttachment api={api} message={message} isOwn={isOwn} />
               ) : (
                 <FileAttachment
                   message={message}

@@ -46,6 +46,13 @@ pub(crate) fn extension_for_mime(mime: &str) -> Option<&'static str> {
         "text/plain" => Some("txt"),
         "application/zip" => Some("zip"),
         "video/mp4" => Some("mp4"),
+        // Голосовые сообщения: MediaRecorder отдаёт webm/opus в Chrome и
+        // Firefox, mp4/aac в Safari, ogg/opus в некоторых сборках.
+        "audio/webm" => Some("webm"),
+        "audio/ogg" => Some("ogg"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/mp4" => Some("m4a"),
+        "audio/wav" => Some("wav"),
         _ => None,
     }
 }
@@ -344,7 +351,8 @@ impl MediaStorage {
         }
         if !matches!(
             extension,
-            "png" | "jpg" | "webp" | "gif" | "pdf" | "txt" | "zip" | "mp4"
+            "png" | "jpg" | "webp" | "gif" | "pdf" | "txt" | "zip" | "mp4" | "webm" | "ogg"
+                | "mp3" | "m4a" | "wav"
         ) {
             return Err(anyhow!("invalid media key"));
         }
