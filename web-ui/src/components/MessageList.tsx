@@ -4,7 +4,7 @@ import type { Api } from '../api';
 import type { Participant, UiMessage } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { Spinner } from './ui/Spinner';
-import { dayKey, formatDayLabel } from '../utils/format';
+import { dayKey, formatDayLabel, userLabel } from '../utils/format';
 import { cn } from '../utils/classNames';
 
 const GROUP_WINDOW_SECONDS = 5 * 60;
@@ -227,7 +227,10 @@ export function MessageList({
 
     const senderPhone =
       participants.find((participant) => participant.user_id === message.sender_id)
-        ?.phone ?? null;
+        ?.display_name?.trim() ||
+      participants.find((participant) => participant.user_id === message.sender_id)
+        ?.phone ||
+      null;
 
     // Подпись цитаты: «Вы» для своих, телефон участника для чужих,
     // отдельная строка для удалённого сообщения.
@@ -238,10 +241,10 @@ export function MessageList({
       } else if (message.reply_to_sender_id === myUserId) {
         replyAuthor = 'Вы';
       } else {
-        replyAuthor =
-          participants.find(
-            (participant) => participant.user_id === message.reply_to_sender_id,
-          )?.phone ?? 'Участник';
+        const author = participants.find(
+          (participant) => participant.user_id === message.reply_to_sender_id,
+        );
+        replyAuthor = author ? userLabel(author) : 'Участник';
       }
     }
 

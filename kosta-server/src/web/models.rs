@@ -47,6 +47,8 @@ pub struct ChatItem {
 pub struct ParticipantItem {
     pub user_id: i64,
     pub phone: String,
+    /// Отображаемое имя, если пользователь его задал.
+    pub display_name: Option<String>,
     pub is_admin: bool,
     pub is_online: bool,
 }
@@ -94,6 +96,10 @@ pub struct MessageItem {
 pub struct MeResponse {
     pub user_id: i64,
     pub phone: String,
+    /// Отображаемое имя (None — показываем телефон).
+    pub display_name: Option<String>,
+    /// Загружен ли аватар (картинка — `GET /api/avatars/{user_id}`).
+    pub has_avatar: bool,
     pub is_online: bool,
 }
 
@@ -236,12 +242,14 @@ mod tests {
                 ParticipantItem {
                     user_id: 7,
                     phone: "+79990000000".to_string(),
+                    display_name: Some("Аня".to_string()),
                     is_admin: true,
                     is_online: true,
                 },
                 ParticipantItem {
                     user_id: 8,
                     phone: "+79990000001".to_string(),
+                    display_name: None,
                     is_admin: false,
                     is_online: false,
                 },
@@ -274,11 +282,15 @@ mod tests {
         let me = serde_json::to_value(MeResponse {
             user_id: 7,
             phone: "+79990000000".to_string(),
+            display_name: Some("Аня".to_string()),
+            has_avatar: true,
             is_online: false,
         })
         .unwrap();
         assert_eq!(me["user_id"], 7);
         assert_eq!(me["is_online"], false);
+        assert_eq!(me["display_name"], "Аня");
+        assert_eq!(me["has_avatar"], true);
 
         let lookup = serde_json::to_value(LookupResponse {
             user_id: 8,

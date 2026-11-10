@@ -1,4 +1,5 @@
 import type { ChatItem } from '../types';
+import { avatarUrl } from '../api';
 import { Avatar } from './ui/Avatar';
 import { formatChatTime } from '../utils/format';
 import { cn } from '../utils/classNames';
@@ -34,6 +35,12 @@ export function ChatListItem({ chat, active, onSelect }: ChatListItemProps) {
         title={chat.title}
         isGroup={chat.is_group}
         online={!chat.is_group && chat.is_online === true}
+        src={
+          !chat.is_group && chat.other_user_id
+            ? avatarUrl(chat.other_user_id)
+            : null
+        }
+        initialsFrom={chat.is_group ? null : chat.title}
       />
 
       <span className="min-w-0 flex-1">

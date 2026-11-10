@@ -48,7 +48,19 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                     web::scope("/api")
                         .route("/login", web::post().to(handlers::login))
                         .route("/logout", web::post().to(handlers::logout))
-                        .route("/me", web::get().to(handlers::get_me))
+                        .service(
+                            web::resource("/me")
+                                .route(web::get().to(handlers::get_me))
+                                .route(web::patch().to(handlers::update_me)),
+                        )
+                        .service(
+                            web::resource("/me/avatar")
+                                .route(web::post().to(handlers::upload_avatar)),
+                        )
+                        .service(
+                            web::resource("/avatars/{user_id}")
+                                .route(web::get().to(handlers::get_avatar)),
+                        )
                         .route("/chats", web::get().to(handlers::get_chats))
                         // Статические сегменты регистрируем до "/chats/{id}":
                         // actix выбирает ресурс по порядку регистрации, иначе

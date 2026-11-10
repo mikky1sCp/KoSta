@@ -20,6 +20,8 @@ const MAX_GROUP_INVITEES: usize = MAX_GROUP_PARTICIPANTS - 1;
 const MAX_GROUP_TITLE_CHARS: usize = 128;
 /// Максимальная длина подписи к медиа — та же, что у текста сообщения.
 const MAX_MEDIA_CAPTION_CHARS: usize = 4096;
+/// Максимальная длина отображаемого имени в профиле.
+const MAX_DISPLAY_NAME_CHARS: usize = 64;
 
 fn client_ip(req: &HttpRequest) -> String {
     req.connection_info()
@@ -141,6 +143,7 @@ fn participant_item(row: ParticipantRow) -> ParticipantItem {
     ParticipantItem {
         user_id: row.user_id,
         phone: row.phone,
+        display_name: row.display_name,
         is_admin: row.is_admin,
         is_online: row.is_online,
     }
@@ -404,15 +407,159 @@ pub async fn get_me(req: HttpRequest, db: web::Data<Arc<Database>>) -> Result<Ht
         Ok(profile) => profile,
         Err(e) => return Ok(server_error("failed to load profile", e)),
     };
-    let Some((phone, is_online)) = profile else {
+    let Some(profile) = profile else {
         return Ok(not_found("user not found"));
     };
 
     Ok(HttpResponse::Ok().json(MeResponse {
         user_id,
-        phone,
-        is_online,
+        phone: profile.phone,
+        display_name: profile.display_name,
+        has_avatar: profile.avatar_key.is_some(),
+        is_online: profile.is_online,
     }))
+}
+
+/// Тело `PATCH /api/me`.
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateProfileBody {
+    pub display_name: String,
+}
+
+/// Правка своего профиля: `PATCH /api/me`.
+pub async fn update_me(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    body: web::Json<UpdateProfileBody>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let name = body.display_name.trim();
+    if name.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        return Ok(bad_request("display name is too long (max 64 characters)"));
+    }
+    if let Err(e) = db.update_display_name(user_id, name) {
+        return Ok(server_error("failed to update profile", e));
+    }
+
+    let profile = match db.get_user_profile(user_id) {
+        Ok(Some(profile)) => profile,
+        Ok(None) => return Ok(not_found("user not found")),
+        Err(e) => return Ok(server_error("failed to load profile", e)),
+    };
+
+    Ok(HttpResponse::Ok().json(MeResponse {
+        user_id,
+        phone: profile.phone,
+        display_name: profile.display_name,
+        has_avatar: profile.avatar_key.is_some(),
+        is_online: profile.is_online,
+    }))
+}
+
+/// Загрузка аватара: `POST /api/me/avatar` (сырое тело картинки).
+pub async fn upload_avatar(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    body: web::Bytes,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let mime = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if body.is_empty() {
+        return Ok(bad_request("empty image"));
+    }
+
+    let key = match media::save_avatar(user_id, &body, &mime) {
+        Ok(key) => key,
+        Err(e) => {
+            let message = e.to_string();
+            if message.contains("unsupported avatar type") {
+                return Ok(HttpResponse::UnsupportedMediaType()
+                    .json(json!({ "error": "only PNG, JPEG and WebP images are allowed" })));
+            }
+            if message.contains("too large") {
+                return Ok(HttpResponse::PayloadTooLarge()
+                    .json(json!({ "error": "image is too large" })));
+            }
+            return Ok(server_error("failed to store avatar", e));
+        }
+    };
+
+    match db.set_avatar_key(user_id, &key) {
+        Ok(previous) => {
+            if let Some(previous) = previous {
+                media::delete_avatar(&previous);
+            }
+            Ok(HttpResponse::Ok().json(json!({ "ok": true, "has_avatar": true })))
+        }
+        Err(e) => {
+            media::delete_avatar(&key);
+            Ok(server_error("failed to save avatar", e))
+        }
+    }
+}
+
+/// Аватар пользователя: `GET /api/avatars/{user_id}`.
+///
+/// Без токена: картинка профиля нужна в тегах `<img>`, а браузер не отправит
+/// заголовок Authorization. Аватар и так виден всем, кто состоит с человеком
+/// в общем диалоге; перебор по id ограничен общим лимитом HTTP.
+pub async fn get_avatar(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    path: web::Path<String>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match path_id(&path, "id пользователя") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let key = match db.get_avatar_key(user_id) {
+        Ok(Some(key)) => key,
+        Ok(None) => return Ok(not_found("avatar not found")),
+        Err(e) => return Ok(server_error("failed to load avatar", e)),
+    };
+    let bytes = match media::read_avatar(&key) {
+        Ok(bytes) => bytes,
+        Err(e) => return Ok(server_error("failed to read avatar", e)),
+    };
+
+    let mime = match key.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    };
+
+    Ok(HttpResponse::Ok()
+        .content_type(mime)
+        .insert_header((header::CACHE_CONTROL, "public, max-age=60"))
+        .body(bytes))
 }
 
 /// Точный поиск пользователя по номеру — для «новый чат» и добавления

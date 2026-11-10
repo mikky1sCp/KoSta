@@ -11,6 +11,10 @@ export interface LoginResponse {
 export interface Me {
   user_id: number;
   phone: string;
+  /** Отображаемое имя; null — показываем телефон. */
+  display_name: string | null;
+  /** Загружен ли аватар (`GET /api/avatars/{user_id}`). */
+  has_avatar: boolean;
   is_online: boolean;
 }
 
@@ -63,6 +67,8 @@ export interface UiMessage extends Message {
 export interface Participant {
   user_id: number;
   phone: string;
+  /** Отображаемое имя, если пользователь его задал. */
+  display_name: string | null;
   is_admin: boolean;
   is_online: boolean;
 }

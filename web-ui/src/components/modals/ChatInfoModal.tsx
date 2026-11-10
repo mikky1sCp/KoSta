@@ -9,10 +9,11 @@ import {
   UsersRound,
 } from 'lucide-react';
 import type { Api } from '../../api';
+import { avatarUrl } from '../../api';
 import type { ChatDetails, Participant } from '../../types';
 import type { ToastApi } from '../../hooks/useToasts';
 import { getErrorMessage } from '../../utils/errors';
-import { pluralize } from '../../utils/format';
+import { pluralize, userLabel } from '../../utils/format';
 import { Modal } from '../ui/Modal';
 import { Avatar } from '../ui/Avatar';
 import { Button } from '../ui/Button';
@@ -215,6 +216,12 @@ export function ChatInfoModal({
               isGroup={isGroup}
               online={!isGroup && details.chat.is_online === true}
               size="xl"
+              src={
+                !isGroup && details.chat.other_user_id
+                  ? avatarUrl(details.chat.other_user_id)
+                  : null
+              }
+              initialsFrom={isGroup ? null : title}
             />
             <h3 className="mt-3 truncate text-lg font-semibold text-ink">{title}</h3>
             <p className="mt-0.5 text-xs text-muted">
@@ -289,16 +296,19 @@ export function ChatInfoModal({
                     className="flex items-center gap-3 bg-panel-soft px-3 py-2.5"
                   >
                     <Avatar
-                      title={participant.phone}
+                      title={userLabel(participant)}
                       isGroup={false}
                       online={participant.is_online}
                       size="sm"
+                      src={avatarUrl(participant.user_id)}
+                      initialsFrom={participant.display_name}
                     />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-ink">
-                        {participant.phone}
+                        {userLabel(participant)}
                       </p>
-                      <p className="text-[11px] text-muted">
+                      <p className="truncate text-[11px] text-muted">
+                        {participant.display_name ? `${participant.phone} · ` : ''}
                         {participant.is_online ? 'онлайн' : 'не в сети'}
                       </p>
                     </div>

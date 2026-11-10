@@ -1,16 +1,24 @@
-import { LogOut, Moon, Sun, Wifi, WifiOff } from 'lucide-react';
+import { useRef, useState, type ChangeEvent } from 'react';
+import { Camera, LogOut, Moon, Sun, Wifi, WifiOff } from 'lucide-react';
+import type { Api } from '../../api';
+import { avatarUrl } from '../../api';
 import type { Me, Theme, WsStatus } from '../../types';
+import { getErrorMessage } from '../../utils/errors';
 import { Modal } from '../ui/Modal';
 import { Avatar } from '../ui/Avatar';
 import { Button } from '../ui/Button';
+import { TextInput } from '../ui/TextInput';
 import { cn } from '../../utils/classNames';
 
 interface ProfileModalProps {
+  api: Api;
   me: Me | null;
   fallbackPhone: string;
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
   wsStatus: WsStatus;
+  /** Профиль обновился (имя или аватар) — приложение обновляет состояние. */
+  onProfileChange: (me: Me) => void;
   onLogout: () => void;
   onClose: () => void;
 }
@@ -29,21 +37,82 @@ const STATUS_COLOR: Record<WsStatus, string> = {
   offline: 'text-danger',
 };
 
+/** PNG/JPEG/WebP — те же типы, что принимает сервер для аватара. */
+const AVATAR_ACCEPT = 'image/png,image/jpeg,image/webp';
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+
 export function ProfileModal({
+  api,
   me,
   fallbackPhone,
   theme,
   onThemeChange,
   wsStatus,
+  onProfileChange,
   onLogout,
   onClose,
 }: ProfileModalProps) {
   const phone = me?.phone ?? fallbackPhone;
+  const [name, setName] = useState(me?.display_name ?? '');
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const [avatarVersion, setAvatarVersion] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleSaveName() {
+    if (saving) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateProfile(name);
+      onProfileChange(updated);
+      setName(updated.display_name ?? '');
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAvatarChange(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0] ?? null;
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    if (file.size > AVATAR_MAX_BYTES) {
+      setError('Файл больше 5 МБ');
+      return;
+    }
+    setUploading(true);
+    setError('');
+    try {
+      await api.uploadAvatar(file);
+      if (me) {
+        onProfileChange({ ...me, has_avatar: true });
+      }
+      // Сбрасываем кэш браузера для картинки.
+      setAvatarVersion((current) => current + 1);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const avatarSrc =
+    me?.has_avatar && me
+      ? `${avatarUrl(me.user_id)}?v=${avatarVersion}`
+      : null;
 
   return (
     <Modal
       title="Профиль"
-      subtitle="Аккаунт и оформление"
+      subtitle="Имя, фото и оформление"
       onClose={onClose}
       size="sm"
       footer={
@@ -58,16 +127,79 @@ export function ProfileModal({
       }
     >
       <div className="flex flex-col items-center pb-2 pt-1 text-center">
-        <Avatar title={phone || 'KoSta'} isGroup={false} size="xl" />
+        <div className="relative">
+          <Avatar
+            title={me?.display_name || phone || 'KoSta'}
+            isGroup={false}
+            size="xl"
+            src={avatarSrc}
+            initialsFrom={me?.display_name ?? null}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            aria-label="Загрузить фото профиля"
+            title="Загрузить фото"
+            className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full border border-line bg-panel text-muted shadow-md transition-colors hover:text-ink disabled:opacity-50"
+          >
+            <Camera className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={AVATAR_ACCEPT}
+            onChange={handleAvatarChange}
+            disabled={uploading}
+            tabIndex={-1}
+            aria-hidden="true"
+            className="hidden"
+          />
+        </div>
+
         <p className="mt-3 text-base font-semibold text-ink">
-          {phone || 'Без номера'}
+          {me?.display_name?.trim() || phone || 'Без номера'}
         </p>
         <p className="mt-0.5 text-xs text-muted">
+          {me?.display_name?.trim() ? `${phone} · ` : ''}
           ID пользователя: {me?.user_id ?? '—'}
         </p>
+        {uploading && <p className="mt-1 text-[11px] text-muted">Загружаем фото…</p>}
       </div>
 
       <div className="mt-4 space-y-4">
+        <section>
+          <p className="mb-1.5 text-xs font-medium text-muted">Ваше имя</p>
+          <div className="flex items-end gap-2">
+            <TextInput
+              containerClassName="flex-1"
+              aria-label="Ваше имя"
+              placeholder="Как вас называть"
+              value={name}
+              maxLength={64}
+              onChange={(event) => setName(event.target.value)}
+              disabled={saving}
+            />
+            <Button
+              variant="secondary"
+              loading={saving}
+              disabled={name.trim() === (me?.display_name ?? '')}
+              onClick={() => void handleSaveName()}
+            >
+              Сохранить
+            </Button>
+          </div>
+          <p className="mt-1 text-[11px] text-muted">
+            Имя видят собеседники вместо номера телефона.
+          </p>
+        </section>
+
+        {error && (
+          <p role="alert" className="rounded-xl border border-danger/25 bg-danger/10 px-3 py-2 text-xs text-danger">
+            {error}
+          </p>
+        )}
+
         <section>
           <p className="mb-1.5 text-xs font-medium text-muted">Тема оформления</p>
           <div className="grid grid-cols-2 gap-1 rounded-xl bg-panel-soft p-1">

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { UsersRound, UserRound } from 'lucide-react';
 import { cn } from '../../utils/classNames';
 
@@ -40,10 +41,10 @@ function hashString(value: string): number {
   return hash;
 }
 
-/** Первая буква названия группы — человеческий штрих вместо иконки-заглушки. */
-function groupInitial(title: string): string {
-  const first = title.trim().charAt(0);
-  // Показываем только настоящую букву; эмодзи/символы — фолбэк на иконку.
+/** Первая буква имени/названия; эмодзи и символы отбрасываются. */
+function firstLetter(value: string): string {
+  const trimmed = value.trim();
+  const first = Array.from(trimmed)[0] ?? '';
   if (first.length > 0 && /^\p{L}$/u.test(first)) {
     return first.toLocaleUpperCase('ru-RU');
   }
@@ -51,16 +52,21 @@ function groupInitial(title: string): string {
 }
 
 interface AvatarProps {
+  /** Название чата или телефон — задаёт цвет фона. */
   title: string;
   isGroup: boolean;
   online?: boolean;
   size?: AvatarSize;
   className?: string;
+  /** URL картинки аватара (например, `/api/avatars/7`). */
+  src?: string | null;
+  /** Имя для инициалов; без него рисуем иконку. */
+  initialsFrom?: string | null;
 }
 
 /**
- * Аватар чата: фон выбирается детерминированно по названию, у групп — из
- * инициалов, у личных чатов — пиктограмма «человек».
+ * Аватар чата: картинка, если она есть, иначе инициалы (у групп — первая
+ * буква названия, у людей — первая буква имени), иначе пиктограмма.
  */
 export function Avatar({
   title,
@@ -68,33 +74,45 @@ export function Avatar({
   online = false,
   size = 'md',
   className,
+  src = null,
+  initialsFrom = null,
 }: AvatarProps) {
+  const [imageFailed, setImageFailed] = useState(false);
   const gradient = GRADIENTS[hashString(title) % GRADIENTS.length];
-  const initial = groupInitial(title);
+  const initial = firstLetter(isGroup ? title : initialsFrom ?? '');
+  const showImage = Boolean(src) && !imageFailed;
 
   return (
     <span
       className={cn(
-        'relative inline-flex shrink-0 select-none items-center justify-center border border-black/10 font-semibold text-white shadow-sm',
+        'relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden border border-black/10 font-semibold text-white shadow-sm',
         SIZE_CLASS[size],
-        gradient,
+        !showImage && gradient,
         className,
       )}
       aria-hidden="true"
     >
-      {isGroup ? (
+      {showImage ? (
+        <img
+          src={src ?? undefined}
+          alt=""
+          className="h-full w-full object-cover"
+          loading="lazy"
+          onError={() => setImageFailed(true)}
+        />
+      ) : isGroup ? (
         initial.length > 0 ? (
-          <span className={cn('leading-none', INITIAL_CLASS[size])}>
-            {initial}
-          </span>
+          <span className={cn('leading-none', INITIAL_CLASS[size])}>{initial}</span>
         ) : (
           <UsersRound className={ICON_CLASS[size]} strokeWidth={2.1} />
         )
+      ) : initial.length > 0 ? (
+        <span className={cn('leading-none', INITIAL_CLASS[size])}>{initial}</span>
       ) : (
         <UserRound className={ICON_CLASS[size]} strokeWidth={2.1} />
       )}
       {online && (
-        <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-panel bg-online" />
+        <span className="absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full border-2 border-panel bg-online" />
       )}
     </span>
   );

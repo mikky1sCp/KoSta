@@ -91,6 +91,7 @@ export function Sidebar({
 }: SidebarProps) {
   const [search, setSearch] = useState('');
   const phone = me?.phone ?? fallbackPhone;
+  const selfLabel = me?.display_name?.trim() || phone;
 
   const filteredChats = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -243,8 +244,8 @@ export function Sidebar({
           />
           <span className={status.textClass}>{status.label}</span>
         </div>
-        <span className="text-[11px] text-muted" title={phone}>
-          {phone || 'KoSta'}
+        <span className="truncate text-[11px] text-muted" title={phone}>
+          {selfLabel || 'KoSta'}
         </span>
       </footer>
     </aside>

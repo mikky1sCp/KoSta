@@ -38,8 +38,41 @@ Revokes the token and closes the user's WebSocket connections. Returns
 ### GET /api/me
 
 ```json
-{"user_id": 7, "phone": "+79990000000", "is_online": true}
+{
+  "user_id": 7,
+  "phone": "+79990000000",
+  "display_name": "Аня",
+  "has_avatar": true,
+  "is_online": true
+}
 ```
+
+`display_name` is `null` until the user sets one; clients then show the phone.
+`has_avatar` tells whether `GET /api/avatars/{user_id}` returns an image.
+
+### PATCH /api/me
+
+Update your own profile. Body: `{"display_name": "Аня"}` (up to 64 characters;
+an empty or blank string resets the name back to the phone number).
+
+- `200` — the updated `MeResponse` (same shape as `GET /api/me`).
+- `400` — the name is too long; `401` — no valid token.
+
+### POST /api/me/avatar
+
+Upload a profile picture. The raw image is the request body and its type comes from
+`Content-Type`; only `image/png`, `image/jpeg` and `image/webp` are accepted, up to
+5 MiB. Replacing the avatar deletes the previous file.
+
+- `200` — `{"ok": true, "has_avatar": true}`
+- `400` — empty body; `415` — unsupported type; `413` — too large.
+
+### GET /api/avatars/{user_id}
+
+The user's avatar bytes (`image/png`, `image/jpeg` or `image/webp`), or `404` when
+the user has no avatar. No token is required: the image is used directly in `<img>`
+tags, and browsers do not send `Authorization` for them. Avatars are visible to
+everyone, which matches how they are shown to chat partners.
 
 ## Chats
 

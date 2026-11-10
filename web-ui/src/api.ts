@@ -106,6 +106,14 @@ function uploadFileName(name: string): string {
 }
 
 /**
+ * URL аватара пользователя. Картинка отдаётся без токена (нужна в `<img>`),
+ * поэтому её можно ставить прямо в `src` и кэшировать в браузере.
+ */
+export function avatarUrl(userId: number): string {
+  return `${API_BASE}/avatars/${encodeURIComponent(String(userId))}`;
+}
+
+/**
  * Тонкий клиент REST API. Все ошибки приводит к ApiError с текстом сервера.
  * Токен не логируется и не попадает в URL.
  */
@@ -274,6 +282,39 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
 
     me(): Promise<Me> {
       return request<Me>('/me');
+    },
+
+    /** Правка профиля: отображаемое имя (пустая строка — сбросить). */
+    updateProfile(displayName: string): Promise<Me> {
+      return request<Me>('/me', {
+        method: 'PATCH',
+        body: JSON.stringify({ display_name: displayName }),
+      });
+    },
+
+    /** Загрузка аватара: сырое тело картинки, тип — из Content-Type. */
+    async uploadAvatar(file: File): Promise<unknown> {
+      const token = getToken();
+      const headers: Record<string, string> = {
+        'Content-Type': file.type || 'application/octet-stream',
+      };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const response = await fetch(`${API_BASE}/me/avatar`, {
+        method: 'POST',
+        headers,
+        body: file,
+      });
+      const raw = await response.text();
+      const payload = parseJson(raw);
+      if (!response.ok) {
+        if (response.status === 401 && token) {
+          onUnauthorized();
+        }
+        throw new ApiError(errorTextFromPayload(payload, response.status), response.status);
+      }
+      return payload;
     },
 
     listChats(): Promise<ChatItem[]> {

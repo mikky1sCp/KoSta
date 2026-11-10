@@ -27,6 +27,11 @@ const RANDOM_HEX_CHARS: usize = 32;
 /// Лимит размера файла по умолчанию, если [`init`] ещё не вызывали.
 const DEFAULT_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
+/// Каталог аватаров внутри media-хранилища.
+const AVATAR_DIR: &str = "avatars";
+/// Максимальный размер картинки профиля.
+const AVATAR_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
 /// MIME-тип из белого списка и безопасное расширение на диске.
 ///
 /// Расширение никогда не берётся из имени, присланного клиентом: иначе файл
@@ -208,6 +213,101 @@ impl MediaStorage {
             })
     }
 
+    /// Сохраняет аватар пользователя и возвращает ключ хранения.
+    ///
+    /// Аватары живут в отдельном каталоге `avatars/` и ограничены меньшим
+    /// размером, чем вложения: это картинка профиля, а не файл.
+    pub(crate) fn save_avatar(&self, user_id: i64, bytes: &[u8], mime: &str) -> Result<String> {
+        if user_id <= 0 {
+            return Err(anyhow!("invalid user id"));
+        }
+        let extension = match mime {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/webp" => "webp",
+            _ => return Err(anyhow!("unsupported avatar type: {}", mime)),
+        };
+        if bytes.is_empty() {
+            return Err(anyhow!("empty file"));
+        }
+        if bytes.len() as u64 > AVATAR_MAX_BYTES {
+            return Err(anyhow!(
+                "avatar is too large: {} bytes (max {})",
+                bytes.len(),
+                AVATAR_MAX_BYTES
+            ));
+        }
+
+        let avatar_dir = self.dir.join(AVATAR_DIR);
+        std::fs::create_dir_all(&avatar_dir).with_context(|| {
+            format!(
+                "failed to create avatar directory {}",
+                avatar_dir.display()
+            )
+        })?;
+
+        let file_name = format!("{}-{}.{}", user_id, random_hex(), extension);
+        let path = avatar_dir.join(&file_name);
+        if let Err(e) = std::fs::write(&path, bytes) {
+            let _ = std::fs::remove_file(&path);
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to write avatar file {}", path.display())));
+        }
+        if let Err(e) = restrict_permissions(&path) {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(format!("{}/{}", AVATAR_DIR, file_name))
+    }
+
+    /// Читает аватар по ключу хранения.
+    pub(crate) fn read_avatar(&self, key: &str) -> Result<Vec<u8>> {
+        let path = self.avatar_path(key)?;
+        std::fs::read(&path).map_err(|e| {
+            anyhow::Error::new(e).context(format!("failed to read avatar {}", path.display()))
+        })
+    }
+
+    /// Best-effort удаление старого аватара при замене.
+    pub(crate) fn delete_avatar(&self, key: &str) {
+        if let Ok(path) = self.avatar_path(key) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Проверяет ключ аватара: `avatars/<user_id>-<32 hex>.<ext>`.
+    fn avatar_path(&self, key: &str) -> Result<PathBuf> {
+        let (dir_part, file_part) = key
+            .split_once('/')
+            .ok_or_else(|| anyhow!("invalid avatar key"))?;
+        if dir_part != AVATAR_DIR
+            || file_part.contains("..")
+            || file_part.contains('\\')
+            || file_part.contains('\0')
+        {
+            return Err(anyhow!("invalid avatar key"));
+        }
+        let (stem, extension) = file_part
+            .split_once('.')
+            .ok_or_else(|| anyhow!("invalid avatar key"))?;
+        let (user_part, hex_part) = stem
+            .split_once('-')
+            .ok_or_else(|| anyhow!("invalid avatar key"))?;
+        if user_part.is_empty()
+            || !user_part.chars().all(|c| c.is_ascii_digit())
+            || user_part.parse::<i64>().map(|id| id <= 0).unwrap_or(true)
+        {
+            return Err(anyhow!("invalid avatar key"));
+        }
+        if hex_part.len() != RANDOM_HEX_CHARS || !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(anyhow!("invalid avatar key"));
+        }
+        if !matches!(extension, "png" | "jpg" | "webp") {
+            return Err(anyhow!("invalid avatar key"));
+        }
+        Ok(self.dir.join(AVATAR_DIR).join(file_part))
+    }
+
     /// Проверяет ключ и превращает его в путь внутри media-каталога.
     fn storage_path(&self, key: &str) -> Result<PathBuf> {
         if key.is_empty()
@@ -306,13 +406,29 @@ pub fn max_bytes() -> u64 {
 }
 
 /// Best-effort удаление медиа-каталога диалога.
-///
 /// Вызывается при удалении пустого диалога: если хранилище ещё не
 /// инициализировано, удалять нечего, поэтому это не ошибка.
 pub fn delete_dialog(dialog_id: i64) -> Result<()> {
     match STORAGE.get() {
         Some(storage) => storage.delete_dialog(dialog_id),
         None => Ok(()),
+    }
+}
+
+/// Сохраняет аватар пользователя и возвращает ключ хранения.
+pub fn save_avatar(user_id: i64, bytes: &[u8], mime: &str) -> Result<String> {
+    storage()?.save_avatar(user_id, bytes, mime)
+}
+
+/// Читает аватар по ключу хранения.
+pub fn read_avatar(key: &str) -> Result<Vec<u8>> {
+    storage()?.read_avatar(key)
+}
+
+/// Best-effort удаление старого аватара (после замены на новый).
+pub fn delete_avatar(key: &str) {
+    if let Some(storage) = STORAGE.get() {
+        storage.delete_avatar(key);
     }
 }
 

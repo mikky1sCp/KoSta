@@ -1,5 +1,6 @@
 import { ArrowLeft, Info } from 'lucide-react';
 import type { ChatDetails, ChatItem } from '../types';
+import { avatarUrl } from '../api';
 import { Avatar } from './ui/Avatar';
 import { pluralize } from '../utils/format';
 import { cn } from '../utils/classNames';
@@ -55,6 +56,12 @@ export function ChatHeader({
         isGroup={chat.is_group}
         online={online}
         size="md"
+        src={
+          !chat.is_group && chat.other_user_id
+            ? avatarUrl(chat.other_user_id)
+            : null
+        }
+        initialsFrom={chat.is_group ? null : chat.title}
       />
 
       <div className="min-w-0 flex-1">

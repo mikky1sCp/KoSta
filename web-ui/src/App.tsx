@@ -403,7 +403,13 @@ export function App() {
         };
         sessionRef.current = nextSession;
         setSession(nextSession);
-        setMe({ user_id: response.user_id, phone, is_online: true });
+        setMe({
+          user_id: response.user_id,
+          phone,
+          display_name: null,
+          has_avatar: false,
+          is_online: true,
+        });
         toast.success(
           register ? 'Аккаунт создан. Добро пожаловать!' : 'С возвращением!',
         );
@@ -1262,11 +1268,17 @@ export function App() {
 
       {modal === 'profile' && (
         <ProfileModal
+          api={api}
           me={me}
           fallbackPhone={session.phone}
           theme={theme}
           onThemeChange={setTheme}
           wsStatus={wsStatus}
+          onProfileChange={(next) => {
+            setMe(next);
+            // Имя влияет на заголовки личных чатов — обновляем список.
+            void refreshChats({ silent: true });
+          }}
           onLogout={handleLogout}
           onClose={() => setModal(null)}
         />

@@ -98,9 +98,19 @@ pub struct ChatRow {
 
 /// Участник диалога с телефоном и статусом — для `GET /api/chats/{id}`.
 #[derive(Debug, Clone)]
+pub struct UserProfileRow {
+    pub phone: String,
+    pub display_name: Option<String>,
+    pub avatar_key: Option<String>,
+    pub is_online: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct ParticipantRow {
     pub user_id: i64,
     pub phone: String,
+    /// Отображаемое имя (если пользователь его задал).
+    pub display_name: Option<String>,
     pub is_admin: bool,
     pub is_online: bool,
 }
@@ -110,7 +120,8 @@ pub struct ParticipantRow {
 /// запросом, чтобы список не уходил в N+1 по истории каждого диалога.
 const CHAT_ROWS_SQL: &str = "
     SELECT d.id, d.type, d.title,
-           (SELECT u.phone FROM dialog_participants dp2
+           (SELECT COALESCE(NULLIF(TRIM(u.display_name), ''), u.phone)
+            FROM dialog_participants dp2
             JOIN users u ON u.id = dp2.user_id
             WHERE dp2.dialog_id = d.id AND dp2.user_id != ?1
             ORDER BY u.id LIMIT 1) AS other_phone,
@@ -310,6 +321,9 @@ impl Database {
         ensure_column(&conn, "messages", "reply_to_id", "INTEGER")?;
         // dialog_participants: роли (создатель группы — администратор)
         ensure_column(&conn, "dialog_participants", "is_admin", "INTEGER NOT NULL DEFAULT 0")?;
+        // users: отображаемое имя и ключ аватара в media-хранилище.
+        ensure_column(&conn, "users", "display_name", "TEXT")?;
+        ensure_column(&conn, "users", "avatar_key", "TEXT")?;
 
         // Для старых групп админа нет: назначаем администратором первого
         // вступившего (создателя), иначе группу нельзя будет модерировать.
@@ -378,6 +392,56 @@ impl Database {
         }
     }
 
+    /// Меняет отображаемое имя. Пустая строка сбрасывает имя (останется телефон).
+    pub fn update_display_name(&self, user_id: i64, display_name: &str) -> Result<()> {
+        let trimmed = display_name.trim();
+        let value: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
+        let conn = self.get_conn()?;
+        let updated = conn.execute(
+            "UPDATE users SET display_name = ?1 WHERE id = ?2",
+            rusqlite::params![value, user_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("пользователь {} не найден", user_id));
+        }
+        Ok(())
+    }
+
+    /// Ставит ключ аватара и возвращает предыдущий (чтобы удалить файл).
+    pub fn set_avatar_key(&self, user_id: i64, key: &str) -> Result<Option<String>> {
+        let conn = self.get_conn()?;
+        let previous: Option<String> = conn
+            .query_row(
+                "SELECT avatar_key FROM users WHERE id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let updated = conn.execute(
+            "UPDATE users SET avatar_key = ?1 WHERE id = ?2",
+            rusqlite::params![key, user_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("пользователь {} не найден", user_id));
+        }
+        Ok(previous)
+    }
+
+    /// Ключ аватара пользователя (для отдачи картинки).
+    pub fn get_avatar_key(&self, user_id: i64) -> Result<Option<String>> {
+        let conn = self.get_conn()?;
+        let key: Option<String> = conn
+            .query_row(
+                "SELECT avatar_key FROM users WHERE id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(key)
+    }
+
     /// Точный поиск пользователя по номеру: `(user_id, phone)`.
     ///
     /// Для `GET /api/users/lookup` и создания диалогов. Сравнение строгое
@@ -394,20 +458,27 @@ impl Database {
         Ok(found)
     }
 
-    /// Телефон и онлайн-статус пользователя для `GET /api/me`.
+    /// Профиль пользователя для `GET /api/me`: телефон, имя, аватар, статус.
     ///
     /// Статус берётся из `user_status`, а не из реестра WebSocket-соединений:
     /// нет строки — значит offline.
-    pub fn get_user_profile(&self, user_id: i64) -> Result<Option<(String, bool)>> {
+    pub fn get_user_profile(&self, user_id: i64) -> Result<Option<UserProfileRow>> {
         let conn = self.get_conn()?;
         let profile = conn
             .query_row(
-                "SELECT u.phone, COALESCE(us.status = 0, 0)
+                "SELECT u.phone, COALESCE(us.status = 0, 0), u.display_name, u.avatar_key
                  FROM users u
                  LEFT JOIN user_status us ON us.user_id = u.id
                  WHERE u.id = ?1",
                 rusqlite::params![user_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                |row| {
+                    Ok(UserProfileRow {
+                        phone: row.get(0)?,
+                        is_online: row.get::<_, i64>(1)? != 0,
+                        display_name: row.get(2)?,
+                        avatar_key: row.get(3)?,
+                    })
+                },
             )
             .optional()?;
         Ok(profile)
@@ -748,7 +819,8 @@ impl Database {
         let base = conn
             .query_row(
                 "SELECT d.type, d.title,
-                        (SELECT u.phone FROM dialog_participants dp2
+                        (SELECT COALESCE(NULLIF(TRIM(u.display_name), ''), u.phone)
+                         FROM dialog_participants dp2
                          JOIN users u ON u.id = dp2.user_id
                          WHERE dp2.dialog_id = d.id AND dp2.user_id != ?2
                          ORDER BY u.id LIMIT 1) AS other_phone
@@ -802,7 +874,8 @@ impl Database {
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
             "SELECT dp.user_id, u.phone, dp.is_admin,
-                    CASE WHEN us.status = 0 THEN 1 ELSE 0 END
+                    CASE WHEN us.status = 0 THEN 1 ELSE 0 END,
+                    u.display_name
              FROM dialog_participants dp
              JOIN users u ON u.id = dp.user_id
              LEFT JOIN user_status us ON us.user_id = dp.user_id
@@ -815,6 +888,7 @@ impl Database {
                 phone: row.get(1)?,
                 is_admin: row.get::<_, i64>(2)? != 0,
                 is_online: row.get::<_, i64>(3)? != 0,
+                display_name: row.get(4)?,
             })
         })?;
         let mut participants = Vec::new();
@@ -1745,22 +1819,15 @@ mod tests {
             "номер сверяется точно, без подстрок"
         );
 
-        assert_eq!(
-            t.db.get_user_profile(user_id).unwrap(),
-            Some(("+2110".to_string(), false)),
-            "нет строки user_status — offline"
-        );
+        let profile = t.db.get_user_profile(user_id).unwrap().expect("профиль");
+        assert_eq!(profile.phone, "+2110");
+        assert!(!profile.is_online, "нет строки user_status — offline");
         t.db.set_user_status(user_id, 0).unwrap();
-        assert_eq!(
-            t.db.get_user_profile(user_id).unwrap(),
-            Some(("+2110".to_string(), true))
-        );
+        let profile = t.db.get_user_profile(user_id).unwrap().expect("профиль");
+        assert!(profile.is_online);
         t.db.set_user_status(user_id, 3).unwrap();
-        assert_eq!(
-            t.db.get_user_profile(user_id).unwrap(),
-            Some(("+2110".to_string(), false)),
-            "любой статус кроме 0 — offline"
-        );
+        let profile = t.db.get_user_profile(user_id).unwrap().expect("профиль");
+        assert!(!profile.is_online, "любой статус кроме 0 — offline");
         assert!(t.db.get_user_profile(999_999).unwrap().is_none());
     }
 

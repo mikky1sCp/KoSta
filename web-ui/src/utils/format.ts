@@ -125,6 +125,15 @@ export function pluralize(
   return many;
 }
 
+/** Подпись человека: имя, если задано, иначе телефон. */
+export function userLabel(user: {
+  display_name?: string | null;
+  phone: string;
+}): string {
+  const name = user.display_name?.trim();
+  return name && name.length > 0 ? name : user.phone;
+}
+
 /** «печатает…» для личного чата и «+7999… печатает…» для группы. */
 export function buildTypingLabel(
   typingUserIds: number[],
@@ -139,7 +148,7 @@ export function buildTypingLabel(
   }
   const names = typingUserIds.map((userId) => {
     const participant = participants.find((item) => item.user_id === userId);
-    return participant?.phone ?? 'Участник';
+    return participant ? userLabel(participant) : 'Участник';
   });
   if (names.length === 1) {
     return `${names[0]} печатает…`;
