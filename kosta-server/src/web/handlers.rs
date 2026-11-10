@@ -22,6 +22,8 @@ const MAX_GROUP_TITLE_CHARS: usize = 128;
 const MAX_MEDIA_CAPTION_CHARS: usize = 4096;
 /// Максимальная длина отображаемого имени в профиле.
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
+/// Максимальная длина поискового запроса.
+const MAX_SEARCH_QUERY_CHARS: usize = 128;
 
 fn client_ip(req: &HttpRequest) -> String {
     req.connection_info()
@@ -359,33 +361,90 @@ pub async fn get_history(
         Ok(rows) => {
             let messages: Vec<MessageItem> = rows
                 .into_iter()
-                .map(|row| {
-                    let is_media = row.is_media();
-                    MessageItem {
-                        id: row.id,
-                        sender_id: row.sender_id,
-                        text: row.text,
-                        timestamp: row.timestamp,
-                        // Одна колонка is_outgoing хранит «как видел отправитель»;
-                        // для зрителя исходящее = отправлено им самим.
-                        is_outgoing: row.sender_id == user_id,
-                        read: row.read,
-                        delivered: row.delivered,
-                        media_name: row.media_name,
-                        media_type: row.media_type,
-                        media_size: row.media_size,
-                        is_media,
-                        reply_to_id: row.reply_to_id,
-                        reply_to_text: row.reply_text,
-                        reply_to_sender_id: row.reply_sender_id,
-                        reply_to_is_media: row.reply_is_media,
-                        edited_at: row.edited_at,
-                    }
-                })
+                .map(|row| message_item_from_row(row, user_id))
                 .collect();
             Ok(HttpResponse::Ok().json(messages))
         }
         Err(e) => Ok(server_error("failed to load history", e)),
+    }
+}
+
+/// Строка БД → элемент API глазами зрителя.
+fn message_item_from_row(row: crate::db::HistoryRow, viewer_id: i64) -> MessageItem {
+    // Считаем до перемещения полей: `is_media` зависит от `media_path`.
+    let is_media = row.is_media();
+    MessageItem {
+        id: row.id,
+        sender_id: row.sender_id,
+        text: row.text,
+        timestamp: row.timestamp,
+        // Одна колонка is_outgoing хранит «как видел отправитель»;
+        // для зрителя исходящее = отправлено им самим.
+        is_outgoing: row.sender_id == viewer_id,
+        read: row.read,
+        delivered: row.delivered,
+        media_name: row.media_name,
+        media_type: row.media_type,
+        media_size: row.media_size,
+        is_media,
+        reply_to_id: row.reply_to_id,
+        reply_to_text: row.reply_text,
+        reply_to_sender_id: row.reply_sender_id,
+        reply_to_is_media: row.reply_is_media,
+        edited_at: row.edited_at,
+    }
+}
+
+/// Параметры `GET /api/search`.
+#[derive(Debug, serde::Deserialize)]
+pub struct SearchQuery {
+    pub chat_id: i64,
+    pub q: String,
+    #[serde(default)]
+    pub limit: Option<i32>,
+}
+
+/// Поиск по истории диалога: `GET /api/search?chat_id=12&q=текст`.
+pub async fn search_history(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    query: web::Query<SearchQuery>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let needle = query.q.trim();
+    if needle.is_empty() {
+        return Ok(bad_request("query is empty"));
+    }
+    if needle.chars().count() > MAX_SEARCH_QUERY_CHARS {
+        return Ok(bad_request("query is too long (max 128 characters)"));
+    }
+
+    let chat_id = query.chat_id;
+    let participants = match dialog_participants(&db, chat_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    match db.search_messages(chat_id, needle, limit) {
+        Ok(rows) => {
+            let messages: Vec<MessageItem> = rows
+                .into_iter()
+                .map(|row| message_item_from_row(row, user_id))
+                .collect();
+            Ok(HttpResponse::Ok().json(messages))
+        }
+        Err(e) => Ok(server_error("failed to search messages", e)),
     }
 }
 

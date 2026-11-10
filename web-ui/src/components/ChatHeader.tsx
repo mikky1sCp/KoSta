@@ -1,4 +1,4 @@
-import { ArrowLeft, Info } from 'lucide-react';
+import { ArrowLeft, Info, Search, X } from 'lucide-react';
 import type { ChatDetails, ChatItem } from '../types';
 import { avatarUrl } from '../api';
 import { Avatar } from './ui/Avatar';
@@ -9,6 +9,8 @@ interface ChatHeaderProps {
   chat: ChatItem;
   details: ChatDetails | null;
   typingLabel: string | null;
+  searchOpen: boolean;
+  onToggleSearch: () => void;
   onBack: () => void;
   onOpenInfo: () => void;
 }
@@ -17,6 +19,8 @@ export function ChatHeader({
   chat,
   details,
   typingLabel,
+  searchOpen,
+  onToggleSearch,
   onBack,
   onOpenInfo,
 }: ChatHeaderProps) {
@@ -81,6 +85,24 @@ export function ChatHeader({
           {subtitle}
         </p>
       </div>
+
+      <button
+        type="button"
+        onClick={onToggleSearch}
+        aria-label={searchOpen ? 'Закрыть поиск' : 'Поиск по сообщениям'}
+        title={searchOpen ? 'Закрыть поиск' : 'Поиск по сообщениям'}
+        aria-pressed={searchOpen}
+        className={cn(
+          'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors hover:bg-panel-soft hover:text-ink',
+          searchOpen ? 'bg-panel-strong text-ink' : 'text-muted',
+        )}
+      >
+        {searchOpen ? (
+          <X className="h-4 w-4" aria-hidden="true" />
+        ) : (
+          <Search className="h-4 w-4" aria-hidden="true" />
+        )}
+      </button>
 
       <button
         type="button"

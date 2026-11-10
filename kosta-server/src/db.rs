@@ -182,6 +182,23 @@ fn ensure_column(
     Ok(())
 }
 
+/// Заполняет `text_lower` у сообщений, созданных до появления колонки.
+fn backfill_text_lower(conn: &rusqlite::Connection) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT id, text FROM messages WHERE text_lower IS NULL")?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut update = conn.prepare("UPDATE messages SET text_lower = ?1 WHERE id = ?2")?;
+    for (id, text) in rows {
+        update.execute(rusqlite::params![text.to_lowercase(), id])?;
+    }
+    Ok(())
+}
+
 /// Сессия MTProto 2.0: сырой `auth_key`, salt и счётчики `msg_id`/`seq_no`.
 #[derive(Debug, Clone)]
 pub struct MtprotoSessionRow {
@@ -319,6 +336,10 @@ impl Database {
         ensure_column(&conn, "messages", "deleted", "INTEGER NOT NULL DEFAULT 0")?;
         // Ответ на сообщение (цитата). NULL — обычное сообщение.
         ensure_column(&conn, "messages", "reply_to_id", "INTEGER")?;
+        // Нормализованный текст для поиска: SQLite LIKE не умеет регистро-
+        // независимый поиск для кириллицы, поэтому lower() считает Rust.
+        ensure_column(&conn, "messages", "text_lower", "TEXT")?;
+        backfill_text_lower(&conn)?;
         // dialog_participants: роли (создатель группы — администратор)
         ensure_column(&conn, "dialog_participants", "is_admin", "INTEGER NOT NULL DEFAULT 0")?;
         // users: отображаемое имя и ключ аватара в media-хранилище.
@@ -1066,8 +1087,8 @@ impl Database {
     ) -> Result<i64> {
         let conn = self.get_conn()?;
         conn.execute(
-            "INSERT INTO messages (dialog_id, sender_id, text, timestamp, is_outgoing, media_path, media_type, reply_to_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (dialog_id, sender_id, text, timestamp, is_outgoing, media_path, media_type, reply_to_id, text_lower)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 dialog_id,
                 sender_id,
@@ -1077,6 +1098,7 @@ impl Database {
                 media_path,
                 media_type,
                 reply_to_id,
+                text.to_lowercase(),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1178,31 +1200,47 @@ impl Database {
              ORDER BY m.timestamp DESC
              LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(rusqlite::params![dialog_id, limit, offset], |row| {
-            Ok(HistoryRow {
-                id: row.get(0)?,
-                sender_id: row.get(1)?,
-                text: row.get(2)?,
-                timestamp: row.get(3)?,
-                is_outgoing: row.get::<_, i32>(4)? != 0,
-                read: row.get::<_, i32>(5)? != 0,
-                delivered: row.get::<_, i32>(6)? != 0,
-                media_path: row.get(7)?,
-                media_type: row.get(8)?,
-                media_size: row.get(9)?,
-                media_name: row.get(10)?,
-                reply_to_id: row.get(11)?,
-                edited_at: row.get(12)?,
-                reply_text: row.get(13)?,
-                reply_sender_id: row.get(14)?,
-                reply_is_media: row.get::<_, Option<String>>(15)?.is_some(),
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![dialog_id, limit, offset], history_row_from_row)?;
         let mut msgs = Vec::new();
         for msg in rows {
             msgs.push(msg?);
         }
         Ok(msgs)
+    }
+
+    /// Поиск по тексту сообщений диалога без учёта регистра.
+    ///
+    /// Сравнение идёт по `text_lower`: `LIKE` в SQLite регистронезависим только
+    /// для ASCII, поэтому кириллицу нормализует Rust при записи.
+    pub fn search_messages(
+        &self,
+        dialog_id: i64,
+        query: &str,
+        limit: i32,
+    ) -> Result<Vec<HistoryRow>> {
+        let limit = limit.clamp(1, 200);
+        let needle = format!("%{}%", escape_like(&query.to_lowercase()));
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.sender_id, m.text, m.timestamp, m.is_outgoing, m.read_status,
+                    m.delivered_status, m.media_path, m.media_type, m.media_size, m.media_name,
+                    m.reply_to_id, m.edited_at,
+                    CASE WHEN r.deleted = 1 THEN NULL ELSE r.text END,
+                    CASE WHEN r.deleted = 1 THEN NULL ELSE r.sender_id END,
+                    r.media_path
+             FROM messages m
+             LEFT JOIN messages r ON r.id = m.reply_to_id
+             WHERE m.dialog_id = ?1 AND m.deleted = 0
+               AND m.text_lower LIKE ?2 ESCAPE '\\'
+             ORDER BY m.timestamp DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![dialog_id, needle, limit], history_row_from_row)?;
+        let mut found = Vec::new();
+        for row in rows {
+            found.push(row?);
+        }
+        Ok(found)
     }
 
     #[allow(dead_code)]
@@ -1263,8 +1301,8 @@ impl Database {
             .unwrap()
             .as_secs() as i64;
         conn.execute(
-            "UPDATE messages SET text = ?1, edited_at = ?2 WHERE id = ?3",
-            rusqlite::params![new_text, now, message_id],
+            "UPDATE messages SET text = ?1, edited_at = ?2, text_lower = ?3 WHERE id = ?4",
+            rusqlite::params![new_text, now, new_text.to_lowercase(), message_id],
         )?;
         Ok(now)
     }
@@ -1337,6 +1375,41 @@ fn dialog_title(is_group: bool, raw_title: &str, other_phone: Option<&str>, dial
             .map(|p| p.to_string())
             .unwrap_or_else(|| format!("Диалог {}", dialog_id))
     }
+}
+
+/// Собирает `HistoryRow` из строки запроса истории/поиска.
+fn history_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryRow> {
+    Ok(HistoryRow {
+        id: row.get(0)?,
+        sender_id: row.get(1)?,
+        text: row.get(2)?,
+        timestamp: row.get(3)?,
+        is_outgoing: row.get::<_, i32>(4)? != 0,
+        read: row.get::<_, i32>(5)? != 0,
+        delivered: row.get::<_, i32>(6)? != 0,
+        media_path: row.get(7)?,
+        media_type: row.get(8)?,
+        media_size: row.get(9)?,
+        media_name: row.get(10)?,
+        reply_to_id: row.get(11)?,
+        edited_at: row.get(12)?,
+        reply_text: row.get(13)?,
+        reply_sender_id: row.get(14)?,
+        reply_is_media: row.get::<_, Option<String>>(15)?.is_some(),
+    })
+}
+
+/// Экранирует спецсимволы `LIKE` (`%`, `_` и сам `\`), чтобы запрос
+/// «100%» не превращался в шаблон.
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 /// Собирает `ChatRow` из строки `CHAT_ROWS_SQL`.

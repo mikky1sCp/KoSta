@@ -329,6 +329,15 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       );
     },
 
+    /** Поиск по истории диалога без учёта регистра. */
+    searchMessages(chatId: number, query: string, limit = 50): Promise<Message[]> {
+      return request<Message[]>(
+        `/search?chat_id=${encodeURIComponent(String(chatId))}` +
+          `&q=${encodeURIComponent(query)}` +
+          `&limit=${encodeURIComponent(String(limit))}`,
+      );
+    },
+
     chatDetails(chatId: number): Promise<ChatDetails> {
       return request<ChatDetails>(`/chats/${encodeURIComponent(String(chatId))}`);
     },

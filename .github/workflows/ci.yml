@@ -140,6 +140,9 @@ jobs:
       - name: Profile (display name and avatar) e2e
         run: node scripts/profile.mjs
 
+      - name: Message search e2e
+        run: node scripts/search.mjs
+
       - name: UI is served
         run: curl -sf http://127.0.0.1:8081/ | grep -q "KoSta"
 

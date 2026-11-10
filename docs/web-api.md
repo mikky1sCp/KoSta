@@ -141,6 +141,19 @@ deleted), `reply_to_sender_id` its author and `reply_to_is_media` tells whether 
 quoted message was an attachment. `edited_at` is the last edit time in unix seconds,
 or `null` if the message was never edited.
 
+### GET /api/search?chat_id=12&q=привет&limit=50
+
+Search the dialog's messages by text, case-insensitively (Cyrillic included) and
+ignoring deleted messages. Returns an array of `MessageItem` (same shape as
+`/api/history`), newest first; `limit` is clamped to 1..=200 and defaults to 50.
+
+The comparison uses a normalized `text_lower` column maintained on insert and
+edit, because SQLite's `LIKE` is case-insensitive only for ASCII. `%` and `_` in
+the query are escaped, so "100%" matches literally.
+
+- `400` — empty or longer than 128 characters query;
+  `403` — not a participant; `401` — no valid token.
+
 ### PATCH /api/messages/{id}
 
 Edit one of your own messages. Body: `{"text": "new text"}` (1..4096 characters).

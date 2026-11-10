@@ -70,9 +70,9 @@ contract is described in [docs/web-api.md](docs/web-api.md).
 UI features: login/registration, profile with display name and avatar, chat list with
 search and unread badges, private chats and groups, group administration
 (admin-only add/remove, rename, leave), online status, typing indicators, read
-receipts, replies with quotes, message editing and deletion, message history
-pagination, photo and file attachments, light/dark theme and a responsive mobile
-layout.
+receipts, replies with quotes, message editing and deletion, message search inside
+a chat, message history pagination, photo and file attachments, light/dark theme and
+a responsive mobile layout.
 
 ## End-to-end checks
 
@@ -99,6 +99,12 @@ Profile (display name, avatar upload and serving, name in chat titles):
 
 ```bash
 node scripts/profile.mjs
+```
+
+Message search (case-insensitive Cyrillic, LIKE escaping, edit/delete reindexing):
+
+```bash
+node scripts/search.mjs
 ```
 
 MTProto garbage resistance (malformed abridged frames must not crash the server):

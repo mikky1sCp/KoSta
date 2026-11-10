@@ -97,6 +97,8 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                                 .route(web::post().to(handlers::upload_media)),
                         )
                         .route("/history", web::get().to(handlers::get_history))
+                        // Поиск по истории диалога (без учёта регистра).
+                        .route("/search", web::get().to(handlers::search_history))
                         // Правка и удаление своего сообщения (мягкое удаление).
                         .service(
                             web::resource("/messages/{id}")
