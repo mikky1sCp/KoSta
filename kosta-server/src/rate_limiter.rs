@@ -81,11 +81,29 @@ lazy_static! {
 }
 
 /// Проверка лимита. Возвращает `Ok(())` если разрешено, иначе `Err` с сообщением.
+///
+/// `KOSTA_RATE_LIMIT_DISABLED=1` полностью отключает лимиты. Это нужно только
+/// нагрузочным тестам (много соединений с одного IP иначе упирается в лимит
+/// авторизации), и переменная не должна выставляться в продакшене.
 pub fn check_limit<K: Eq + std::hash::Hash + Clone>(
     limiter: &RateLimiter<K>,
     key: K,
 ) -> Result<(), &'static str> {
+    if limits_disabled() {
+        return Ok(());
+    }
     limiter.check(key)
+}
+
+/// Отключены ли лимиты переменной окружения (читается один раз).
+pub fn limits_disabled() -> bool {
+    *LIMITS_DISABLED
+}
+
+lazy_static! {
+    static ref LIMITS_DISABLED: bool = std::env::var("KOSTA_RATE_LIMIT_DISABLED")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 }
 
 #[cfg(test)]

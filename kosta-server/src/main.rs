@@ -62,7 +62,10 @@ async fn main() -> Result<()> {
         &master_key_path,
     ))?);
 
-    let db_path = config.get_string("server.db_path")?;
+    // KOSTA_DB_PATH переопределяет файл БД (нужно нагрузочным тестам, чтобы
+    // не засорять рабочую базу).
+    let db_path = std::env::var("KOSTA_DB_PATH")
+        .unwrap_or(config.get_string("server.db_path")?);
     let db = Arc::new(db::Database::new(&db_path, secrets)?);
 
     // Веб-сервер слушает свой хост/порт из конфига.
