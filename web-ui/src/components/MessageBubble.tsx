@@ -1,4 +1,14 @@
-import { Check, CheckCheck, Clock3, Copy, Pencil, Reply, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Check,
+  CheckCheck,
+  Clock3,
+  Copy,
+  MoreHorizontal,
+  Pencil,
+  Reply,
+  Trash2,
+} from 'lucide-react';
 import type { Api } from '../api';
 import type { UiMessage } from '../types';
 import { formatTime } from '../utils/format';
@@ -71,17 +81,49 @@ export function MessageBubble({
   const canEdit = isOwn && showCaption && !hasMedia && !message.pending;
   const canDelete = isOwn && !message.pending;
 
-  const actionClass = cn(
-    'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-    isOwn
-      ? 'text-white/80 hover:bg-black/25 hover:text-white'
-      : 'text-muted hover:bg-panel-strong hover:text-ink',
-  );
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Меню закрывается по клику вне его и по Escape.
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen]);
+
+  function runAction(action: (message: UiMessage) => void) {
+    setMenuOpen(false);
+    action(message);
+  }
+
+  const menuItemClass =
+    'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-ink transition-colors hover:bg-panel-strong';
 
   return (
     <div
       className={cn(
-        'animate-fade-in-up group flex w-full',
+        'animate-fade-in-up flex w-full',
+        // Анимация создаёт собственный контекст наложения у каждого сообщения,
+        // поэтому открытое меню иначе перекрывается следующим сообщением.
+        menuOpen && 'relative z-40',
         isOwn ? 'justify-end' : 'justify-start',
       )}
     >
@@ -95,139 +137,150 @@ export function MessageBubble({
           </span>
         )}
 
-        <div
-          className={cn(
-            'relative rounded-2xl shadow-sm',
-            !isOwn && 'transition-shadow duration-150 hover:shadow-md',
-            hasMedia ? 'p-1.5' : 'px-3.5 py-2',
-            isOwn ? 'bubble-out' : 'bubble-in',
-            tail && (isOwn ? 'rounded-br-md' : 'rounded-bl-md'),
-            message.pending && 'opacity-80',
-          )}
-        >
-          {/* Панель действий: видна при наведении или фокусе с клавиатуры. */}
-          <div
-            className={cn(
-              'absolute -top-3 z-20 flex items-center gap-0.5 rounded-xl border border-line bg-panel px-1 py-0.5 opacity-0 shadow-md transition-opacity focus-within:opacity-100 group-hover:opacity-100',
-              isOwn ? 'right-1' : 'left-1',
-            )}
-          >
+        <div className="relative flex items-start gap-1">
+          {/* Кнопка «⋯» видна всегда: hover-меню не работает на тач-экранах
+              и его трудно обнаружить. */}
+          <div ref={menuRef} className={cn('relative shrink-0', isOwn && 'order-2')}>
             <button
               type="button"
-              onClick={() => onReplyMessage(message)}
-              aria-label="Ответить"
-              title="Ответить"
-              className={actionClass}
+              onClick={() => setMenuOpen((open) => !open)}
+              aria-label="Действия с сообщением"
+              aria-expanded={menuOpen}
+              title="Действия"
+              className="flex h-6 w-6 items-center justify-center rounded-full text-muted opacity-45 transition-opacity hover:bg-panel-soft hover:text-ink hover:opacity-100 focus-visible:opacity-100"
             >
-              <Reply className="h-3.5 w-3.5" aria-hidden="true" />
+              <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
             </button>
-            {showCaption && (
-              <button
-                type="button"
-                onClick={() => onCopyMessage(message)}
-                aria-label="Копировать текст"
-                title="Копировать текст"
-                className={actionClass}
+
+            {menuOpen && (
+              <div
+                role="menu"
+                className={cn(
+                  'absolute top-7 z-30 w-40 rounded-xl border border-line bg-panel p-1 shadow-xl',
+                  isOwn ? 'right-0' : 'left-0',
+                )}
               >
-                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            )}
-            {canEdit && (
-              <button
-                type="button"
-                onClick={() => onEditMessage(message)}
-                aria-label="Редактировать"
-                title="Редактировать"
-                className={actionClass}
-              >
-                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            )}
-            {canDelete && (
-              <button
-                type="button"
-                onClick={() => onDeleteMessage(message)}
-                aria-label="Удалить"
-                title="Удалить"
-                className={cn(actionClass, 'hover:text-danger')}
-              >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => runAction(onReplyMessage)}
+                  className={menuItemClass}
+                >
+                  <Reply className="h-3.5 w-3.5" aria-hidden="true" />
+                  Ответить
+                </button>
+                {showCaption && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runAction(onCopyMessage)}
+                    className={menuItemClass}
+                  >
+                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                    Копировать
+                  </button>
+                )}
+                {canEdit && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runAction(onEditMessage)}
+                    className={menuItemClass}
+                  >
+                    <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                    Редактировать
+                  </button>
+                )}
+                {canDelete && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runAction(onDeleteMessage)}
+                    className={cn(menuItemClass, 'text-danger hover:bg-danger/10')}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Удалить
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
-          {hasReply && (
-            <div
-              className={cn(
-                'mb-1.5 rounded-lg border-l-2 px-2 py-1',
-                isOwn
-                  ? 'border-white/50 bg-black/15'
-                  : 'border-accent bg-accent-soft',
-                hasMedia && 'mx-0.5 mt-0.5',
-              )}
-            >
-              <p
-                className={cn(
-                  'truncate text-[11px] font-semibold',
-                  isOwn ? 'text-white/90' : 'text-accent-strong',
-                )}
-              >
-                {replyAuthor ?? 'Сообщение'}
-              </p>
-              <p
-                className={cn(
-                  'truncate text-[11px]',
-                  isOwn ? 'text-white/75' : 'text-muted',
-                )}
-              >
-                {message.reply_to_text?.trim()
-                  ? message.reply_to_text
-                  : message.reply_to_is_media
-                    ? 'Вложение'
-                    : 'Сообщение удалено'}
-              </p>
-            </div>
-          )}
-
-          {hasMedia &&
-            (hasImage ? (
-              <MediaImage
-                api={api}
-                message={message}
-                isOwn={isOwn}
-                onOpen={onOpenImage}
-              />
-            ) : (
-              <FileAttachment
-                message={message}
-                isOwn={isOwn}
-                onDownload={onDownload}
-              />
-            ))}
-
-          {showCaption && (
-            <p
-              className={cn(
-                'whitespace-pre-wrap break-words text-pretty text-sm leading-relaxed',
-                hasMedia && 'px-2 pt-1.5',
-              )}
-            >
-              {message.text}
-            </p>
-          )}
-
           <div
             className={cn(
-              'mt-1 flex items-center justify-end gap-1 text-[10px] leading-none',
-              hasMedia && 'px-1 pb-0.5',
-              isOwn ? 'text-white/75' : 'text-muted',
+              'min-w-0 rounded-2xl shadow-sm',
+              hasMedia ? 'p-1.5' : 'px-3.5 py-2',
+              isOwn ? 'bubble-out' : 'bubble-in',
+              tail && (isOwn ? 'rounded-br-md' : 'rounded-bl-md'),
+              message.pending && 'opacity-80',
             )}
           >
-            {message.edited_at != null && (
-              <span className="mr-0.5 italic opacity-90">изменено</span>
+            {hasReply && (
+              <div
+                className={cn(
+                  'mb-1.5 rounded-lg border-l-2 px-2 py-1',
+                  isOwn ? 'border-white/50 bg-black/15' : 'border-accent bg-accent-soft',
+                  hasMedia && 'mx-0.5 mt-0.5',
+                )}
+              >
+                <p
+                  className={cn(
+                    'truncate text-[11px] font-semibold',
+                    isOwn ? 'text-white/90' : 'text-accent-strong',
+                  )}
+                >
+                  {replyAuthor ?? 'Сообщение'}
+                </p>
+                <p
+                  className={cn(
+                    'truncate text-[11px]',
+                    isOwn ? 'text-white/75' : 'text-muted',
+                  )}
+                >
+                  {message.reply_to_text?.trim()
+                    ? message.reply_to_text
+                    : message.reply_to_is_media
+                      ? 'Вложение'
+                      : 'Сообщение удалено'}
+                </p>
+              </div>
             )}
-            <span className="tabular-nums">{formatTime(message.timestamp)}</span>
-            {isOwn && <OutgoingStatus message={message} />}
+
+            {hasMedia &&
+              (hasImage ? (
+                <MediaImage
+                  api={api}
+                  message={message}
+                  isOwn={isOwn}
+                  onOpen={onOpenImage}
+                />
+              ) : (
+                <FileAttachment
+                  message={message}
+                  isOwn={isOwn}
+                  onDownload={onDownload}
+                />
+              ))}
+
+            {showCaption && (
+              <p className="whitespace-pre-wrap break-words text-pretty text-sm leading-relaxed">
+                {message.text}
+              </p>
+            )}
+
+            <div
+              className={cn(
+                'mt-1 flex items-center justify-end gap-1 text-[10px] leading-none',
+                hasMedia && 'px-1 pb-0.5',
+                isOwn ? 'text-white/75' : 'text-muted',
+              )}
+            >
+              {message.edited_at != null && (
+                <span className="mr-0.5 italic opacity-90">изменено</span>
+              )}
+              <span className="tabular-nums">{formatTime(message.timestamp)}</span>
+              {isOwn && <OutgoingStatus message={message} />}
+            </div>
           </div>
         </div>
       </div>
