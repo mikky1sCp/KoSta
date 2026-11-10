@@ -3,6 +3,7 @@ use anyhow::{anyhow, Result};
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::secrets::SecretsBox;
@@ -47,6 +48,15 @@ pub struct HistoryRow {
     pub reply_is_media: bool,
     /// Время последнего редактирования (unix seconds).
     pub edited_at: Option<i64>,
+}
+
+/// Реакция на сообщение, сгруппированная по эмодзи.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReactionRow {
+    pub emoji: String,
+    pub count: i64,
+    /// Ставил ли эту реакцию текущий зритель.
+    pub me: bool,
 }
 
 impl HistoryRow {
@@ -290,8 +300,7 @@ impl Database {
                 FOREIGN KEY(dialog_id) REFERENCES dialogs(id),
                 FOREIGN KEY(sender_id) REFERENCES users(id)
             );
-            CREATE TABLE IF NOT EXISTS user_status (
-                user_id INTEGER PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS user_status (                user_id INTEGER PRIMARY KEY,
                 status INTEGER NOT NULL,
                 last_seen INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -302,6 +311,15 @@ impl Database {
                 user_id INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS message_reactions (
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(message_id, user_id, emoji),
+                FOREIGN KEY(message_id) REFERENCES messages(id),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
             ",
@@ -317,6 +335,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_dialog_participants_user_id ON dialog_participants(user_id);
             CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_id ON auth_tokens(user_id);
             CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires_at ON auth_tokens(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_message_reactions_message ON message_reactions(message_id);
             "
         )?;
 
@@ -1322,6 +1341,95 @@ impl Database {
             rusqlite::params![message_id],
         )?;
         Ok(())
+    }
+
+    // ===== РЕАКЦИИ =====
+
+    /// Ставит реакцию. `false` — такая реакция у пользователя уже была.
+    pub fn add_reaction(&self, message_id: i64, user_id: i64, emoji: &str) -> Result<bool> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let conn = self.get_conn()?;
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO message_reactions (message_id, user_id, emoji, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![message_id, user_id, emoji, now],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    /// Снимает реакцию. `true` — реакция была и удалена.
+    pub fn remove_reaction(&self, message_id: i64, user_id: i64, emoji: &str) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let removed = conn.execute(
+            "DELETE FROM message_reactions WHERE message_id = ?1 AND user_id = ?2 AND emoji = ?3",
+            rusqlite::params![message_id, user_id, emoji],
+        )?;
+        Ok(removed > 0)
+    }
+
+    /// Агрегированные реакции одного сообщения.
+    pub fn get_message_reactions(
+        &self,
+        message_id: i64,
+        viewer_id: i64,
+    ) -> Result<Vec<ReactionRow>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT emoji, COUNT(*), MAX(CASE WHEN user_id = ?2 THEN 1 ELSE 0 END)
+             FROM message_reactions
+             WHERE message_id = ?1
+             GROUP BY emoji
+             ORDER BY MIN(created_at), emoji",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![message_id, viewer_id], |row| {
+            Ok(ReactionRow {
+                emoji: row.get(0)?,
+                count: row.get(1)?,
+                me: row.get::<_, i64>(2)? != 0,
+            })
+        })?;
+        let mut reactions = Vec::new();
+        for row in rows {
+            reactions.push(row?);
+        }
+        Ok(reactions)
+    }
+
+    /// Реакции для всех сообщений диалога — одним запросом, без N+1.
+    pub fn get_dialog_reactions(
+        &self,
+        dialog_id: i64,
+        viewer_id: i64,
+    ) -> Result<HashMap<i64, Vec<ReactionRow>>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT r.message_id, r.emoji, COUNT(*),
+                    MAX(CASE WHEN r.user_id = ?2 THEN 1 ELSE 0 END)
+             FROM message_reactions r
+             JOIN messages m ON m.id = r.message_id
+             WHERE m.dialog_id = ?1 AND m.deleted = 0
+             GROUP BY r.message_id, r.emoji
+             ORDER BY MIN(r.created_at), r.emoji",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![dialog_id, viewer_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                ReactionRow {
+                    emoji: row.get(1)?,
+                    count: row.get(2)?,
+                    me: row.get::<_, i64>(3)? != 0,
+                },
+            ))
+        })?;
+        let mut by_message: HashMap<i64, Vec<ReactionRow>> = HashMap::new();
+        for row in rows {
+            let (message_id, reaction) = row?;
+            by_message.entry(message_id).or_default().push(reaction);
+        }
+        Ok(by_message)
     }
 
     /// Метаданные сообщения, нужные для рассылки правки/удаления.

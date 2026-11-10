@@ -124,7 +124,8 @@ An array of messages, newest first (`limit` is clamped to 1..=200, `offset >= 0`
   "reply_to_text": null,
   "reply_to_sender_id": null,
   "reply_to_is_media": false,
-  "edited_at": null
+  "edited_at": null,
+  "reactions": []
 }
 ```
 
@@ -153,6 +154,26 @@ the query are escaped, so "100%" matches literally.
 
 - `400` — empty or longer than 128 characters query;
   `403` — not a participant; `401` — no valid token.
+
+### POST /api/messages/{id}/reactions
+
+Toggle a reaction on a message. Body: `{"emoji": "👍"}` (up to 8 characters, no
+control characters). Calling it again with the same emoji removes the reaction.
+
+```json
+{
+  "ok": true,
+  "reactions": [{"emoji": "👍", "count": 2, "me": true}]
+}
+```
+
+`reactions` is grouped per emoji, `count` is the number of users and `me` says
+whether the caller reacted. Subscribers of the dialog receive a
+`message_reactions` event with the same grouping but without `me`, since that flag
+is viewer-specific.
+
+- `400` — empty or too long emoji; `403` — not a participant;
+  `404` — message not found or deleted.
 
 ### PATCH /api/messages/{id}
 
@@ -317,6 +338,9 @@ Server → client:
 - `message_edited {"dialog_id", "message_id", "text", "edited_at"}` — a message was
   edited by its author
 - `message_deleted {"dialog_id", "message_id"}` — a message was deleted by its author
+- `message_reactions {"dialog_id", "message_id", "reactions": [{"emoji", "count"}]}` —
+  reactions on a message changed; `me` is intentionally absent, each client keeps
+  its own flag
 - `error {"error"}`
 
 Limits: auth — 10 attempts/minute per IP, frames — 60/s per IP, messages — 10/s per

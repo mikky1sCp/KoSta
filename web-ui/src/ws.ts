@@ -15,6 +15,14 @@ export type WsEvent =
       payload: { dialog_id: number; message_id: number; text: string; edited_at: number };
     }
   | { type: 'message_deleted'; payload: { dialog_id: number; message_id: number } }
+  | {
+      type: 'message_reactions';
+      payload: {
+        dialog_id: number;
+        message_id: number;
+        reactions: { emoji: string; count: number }[];
+      };
+    }
   | { type: 'error'; payload: { error: string } };
 
 export interface WsHandlers {
@@ -297,6 +305,25 @@ export class WsClient {
           },
         });
         break;
+      case 'message_reactions': {
+        const raw = Array.isArray(payload.reactions) ? payload.reactions : [];
+        const reactions = raw
+          .filter((item): item is Record<string, unknown> => isRecord(item))
+          .filter((item) => typeof item.emoji === 'string' && item.emoji.length > 0)
+          .map((item) => ({
+            emoji: item.emoji as string,
+            count: asNumber(item.count),
+          }));
+        this.handlers.onEvent({
+          type: 'message_reactions',
+          payload: {
+            dialog_id: asNumber(payload.dialog_id),
+            message_id: asNumber(payload.message_id),
+            reactions,
+          },
+        });
+        break;
+      }
       case 'error':
         this.handlers.onEvent({
           type: 'error',

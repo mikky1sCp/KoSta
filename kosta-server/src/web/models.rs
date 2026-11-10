@@ -89,6 +89,16 @@ pub struct MessageItem {
     pub reply_to_is_media: bool,
     /// Время последнего редактирования, unix seconds.
     pub edited_at: Option<i64>,
+    /// Реакции, сгруппированные по эмодзи.
+    pub reactions: Vec<ReactionItem>,
+}
+
+/// Реакция на сообщение: эмодзи, число поставивших и признак «моя».
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReactionItem {
+    pub emoji: String,
+    pub count: i64,
+    pub me: bool,
 }
 
 /// Ответ `GET /api/me`.
@@ -320,6 +330,7 @@ mod tests {
             reply_to_sender_id: None,
             reply_to_is_media: false,
             edited_at: None,
+            reactions: Vec::new(),
         };
         let value = serde_json::to_value(item).unwrap();
         assert_eq!(value["media_name"], "фото.png");
@@ -352,6 +363,7 @@ mod tests {
             reply_to_sender_id: None,
             reply_to_is_media: false,
             edited_at: None,
+            reactions: Vec::new(),
         };
         let value = serde_json::to_value(item).unwrap();
         assert!(value["media_name"].is_null());

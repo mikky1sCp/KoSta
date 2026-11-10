@@ -494,6 +494,7 @@ export function App() {
         reply_to_sender_id: replyTarget?.sender_id ?? null,
         reply_to_is_media: replyTarget?.is_media ?? false,
         edited_at: null,
+        reactions: [],
         pending: true,
       };
 
@@ -644,8 +645,7 @@ export function App() {
     [api, editing, toast],
   );
 
-  const handleDeleteMessage = useCallback(
-    (message: UiMessage) => {
+  const handleDeleteMessage = useCallback(    (message: UiMessage) => {
       if (!window.confirm('Удалить сообщение?')) {
         return;
       }
@@ -658,6 +658,68 @@ export function App() {
         }
         void refreshChats({ silent: true });
       });
+    },
+    [api, refreshChats, toast],
+  );
+
+  const handleToggleReaction = useCallback(
+    (message: UiMessage, emoji: string) => {
+      if (message.id <= 0) {
+        return;
+      }
+      // Оптимистично переключаем у себя, затем сверяемся с сервером.
+      setMessages((current) =>
+        current.map((item) => {
+          if (item.id !== message.id) {
+            return item;
+          }
+          const existing = item.reactions.find((reaction) => reaction.emoji === emoji);
+          if (!existing) {
+            return {
+              ...item,
+              reactions: [...item.reactions, { emoji, count: 1, me: true }],
+            };
+          }
+          if (existing.me) {
+            return {
+              ...item,
+              reactions: item.reactions
+                .map((reaction) =>
+                  reaction.emoji === emoji
+                    ? { ...reaction, count: reaction.count - 1, me: false }
+                    : reaction,
+                )
+                .filter((reaction) => reaction.count > 0),
+            };
+          }
+          return {
+            ...item,
+            reactions: item.reactions.map((reaction) =>
+              reaction.emoji === emoji
+                ? { ...reaction, count: reaction.count + 1, me: true }
+                : reaction,
+            ),
+          };
+        }),
+      );
+
+      void api
+        .toggleReaction(message.id, emoji)
+        .then((response) => {
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === message.id
+                ? { ...item, reactions: response.reactions ?? [] }
+                : item,
+            ),
+          );
+        })
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 401)) {
+            toast.error(getErrorMessage(error));
+          }
+          void refreshChats({ silent: true });
+        });
     },
     [api, refreshChats, toast],
   );
@@ -834,6 +896,33 @@ export function App() {
         }
         setMessages((current) =>
           current.filter((message) => message.id !== message_id),
+        );
+        break;
+      }
+
+      case 'message_reactions': {
+        const { dialog_id, message_id, reactions } = event.payload;
+        if (dialog_id !== activeChatIdRef.current) {
+          break;
+        }
+        setMessages((current) =>
+          current.map((item) => {
+            if (item.id !== message_id) {
+              return item;
+            }
+            // Сервер присылает только счётчики: свой флаг «me» сохраняем.
+            const previous = new Map(
+              item.reactions.map((reaction) => [reaction.emoji, reaction.me]),
+            );
+            return {
+              ...item,
+              reactions: reactions.map((reaction) => ({
+                emoji: reaction.emoji,
+                count: reaction.count,
+                me: previous.get(reaction.emoji) ?? false,
+              })),
+            };
+          }),
         );
         break;
       }
@@ -1248,6 +1337,7 @@ export function App() {
           onReplyMessage={handleReplyMessage}
           onEditMessage={handleEditMessage}
           onDeleteMessage={handleDeleteMessage}
+          onToggleReaction={handleToggleReaction}
           initialDraft={activeChatId !== null ? drafts.get(activeChatId) : ''}
           onDraftChange={(chatId, text) => drafts.set(chatId, text)}
           className={activeChatId !== null ? 'flex' : 'hidden md:flex'}

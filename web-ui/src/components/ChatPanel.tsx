@@ -44,6 +44,7 @@ interface ChatPanelProps {
   onReplyMessage: (message: UiMessage) => void;
   onEditMessage: (message: UiMessage) => void;
   onDeleteMessage: (message: UiMessage) => void;
+  onToggleReaction: (message: UiMessage, emoji: string) => void;
   initialDraft: string;
   onDraftChange: (chatId: number, text: string) => void;
   className?: string;
@@ -108,6 +109,7 @@ function ChatView({
   onReplyMessage,
   onEditMessage,
   onDeleteMessage,
+  onToggleReaction,
   initialDraft,
   onDraftChange,
 }: Omit<ChatPanelProps, 'className' | 'chat'> & { chat: ChatItem }) {
@@ -264,6 +266,7 @@ function ChatView({
               onReplyMessage={onReplyMessage}
               onEditMessage={onEditMessage}
               onDeleteMessage={onDeleteMessage}
+              onToggleReaction={onToggleReaction}
             />
           )}
         </div>
@@ -287,6 +290,7 @@ function ChatView({
           onReplyMessage={onReplyMessage}
           onEditMessage={onEditMessage}
           onDeleteMessage={onDeleteMessage}
+              onToggleReaction={onToggleReaction}
         />
       )}
 

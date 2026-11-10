@@ -57,6 +57,15 @@ export interface Message {
   reply_to_is_media: boolean;
   /** Время последней правки (unix seconds), null — не редактировалось. */
   edited_at: number | null;
+  /** Реакции, сгруппированные по эмодзи. */
+  reactions: ReactionItem[];
+}
+
+/** Реакция на сообщение: эмодзи, число поставивших и признак «моя». */
+export interface ReactionItem {
+  emoji: string;
+  count: number;
+  me: boolean;
 }
 
 /** Сообщение в локальном состоянии: pending — ещё летит на сервер. */

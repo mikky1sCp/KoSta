@@ -41,6 +41,7 @@ interface MessageListProps {
   onReplyMessage: (message: UiMessage) => void;
   onEditMessage: (message: UiMessage) => void;
   onDeleteMessage: (message: UiMessage) => void;
+  onToggleReaction: (message: UiMessage, emoji: string) => void;
 }
 
 function MessagesSkeleton() {
@@ -82,6 +83,7 @@ export function MessageList({
   onReplyMessage,
   onEditMessage,
   onDeleteMessage,
+  onToggleReaction,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -288,6 +290,7 @@ export function MessageList({
         onReplyMessage={onReplyMessage}
         onEditMessage={onEditMessage}
         onDeleteMessage={onDeleteMessage}
+        onToggleReaction={onToggleReaction}
       />,
     );
 

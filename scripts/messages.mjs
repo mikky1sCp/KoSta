@@ -302,7 +302,72 @@ const missingEdit = await req('/api/messages/99999999', {
 });
 check('правка несуществующего сообщения -> 404', missingEdit.status === 404, `status ${missingEdit.status}`);
 
-// ---------- 5. Голосовое сообщение (аудио-вложение) ----------
+// ---------- 6. Реакции ----------
+const react = (token, messageId, emoji) =>
+  req(`/api/messages/${messageId}/reactions`, {
+    method: 'POST',
+    token,
+    body: { emoji },
+  });
+
+const reactA = await react(tokenA, helloId, '👍');
+check(
+  'реакция: первая постановка',
+  reactA.status === 200 &&
+    reactA.body?.reactions?.length === 1 &&
+    reactA.body.reactions[0].emoji === '👍' &&
+    reactA.body.reactions[0].count === 1 &&
+    reactA.body.reactions[0].me === true,
+  JSON.stringify(reactA.body),
+);
+
+const reactEvent = await wsB
+  .next((m) => m.type === 'message_reactions' && m.payload?.message_id === helloId, 4000)
+  .catch(() => null);
+check(
+  'реакция: подписчик получил message_reactions',
+  reactEvent?.payload?.reactions?.length === 1 &&
+    reactEvent.payload.reactions[0].count === 1,
+  JSON.stringify(reactEvent?.payload),
+);
+
+await react(tokenB, helloId, '👍');
+const reactB = await react(tokenB, helloId, '❤️');
+check(
+  'реакция: разные эмодзи группируются отдельно',
+  reactB.body?.reactions?.length === 2,
+  JSON.stringify(reactB.body?.reactions),
+);
+
+const historyReact = await req(`/api/history?chat_id=${dialogId}&limit=20`, { token: tokenA });
+const helloWithReactions = Array.isArray(historyReact.body)
+  ? historyReact.body.find((m) => m.id === helloId)
+  : null;
+const thumbs = helloWithReactions?.reactions?.find((r) => r.emoji === '👍');
+const heart = helloWithReactions?.reactions?.find((r) => r.emoji === '❤️');
+check(
+  'реакция: история отдаёт счётчики и флаг «моя»',
+  thumbs?.count === 2 && thumbs?.me === true && heart?.count === 1 && heart?.me === false,
+  JSON.stringify(helloWithReactions?.reactions),
+);
+
+const removeReaction = await react(tokenA, helloId, '👍');
+const thumbsAfter = removeReaction.body?.reactions?.find((r) => r.emoji === '👍');
+check(
+  'реакция: повторный клик снимает её',
+  thumbsAfter?.count === 1 && thumbsAfter?.me === false,
+  JSON.stringify(removeReaction.body?.reactions),
+);
+
+const emptyReaction = await react(tokenA, helloId, '   ');
+check('реакция: пустой эмодзи -> 400', emptyReaction.status === 400, `status ${emptyReaction.status}`);
+
+const foreignReaction = await react(tokenC, helloId, '👍');
+check('реакция: чужой диалог -> 403', foreignReaction.status === 403, `status ${foreignReaction.status}`);
+
+const deletedReaction = await react(tokenA, replyId, '👍');
+check('реакция: удалённое сообщение -> 404', deletedReaction.status === 404, `status ${deletedReaction.status}`);
+// ---------- 6. Голосовое сообщение (аудио-вложение) ----------
 // Содержимое не проверяется сервером: важен MIME из заголовка.
 const voiceBytes = Buffer.from('1a45dfa3a3428681', 'hex');
 const voiceUpload = await fetch(

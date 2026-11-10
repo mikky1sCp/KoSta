@@ -1,4 +1,4 @@
-import type { Message } from '../types';
+import type { Message, ReactionItem } from '../types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -14,6 +14,28 @@ function asNullableString(value: unknown): string | null {
 
 function asNullableNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Реакции из ответа сервера; битые элементы отбрасываются. */
+export function parseReactions(value: unknown): ReactionItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const reactions: ReactionItem[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    if (typeof item.emoji !== 'string' || item.emoji.length === 0) {
+      continue;
+    }
+    reactions.push({
+      emoji: item.emoji,
+      count: asNumber(item.count),
+      me: item.me === true,
+    });
+  }
+  return reactions;
 }
 
 /**
@@ -49,5 +71,6 @@ export function parseMessagePayload(value: unknown): Message | null {
     reply_to_sender_id: asNullableNumber(value.reply_to_sender_id),
     reply_to_is_media: value.reply_to_is_media === true,
     edited_at: asNullableNumber(value.edited_at),
+    reactions: parseReactions(value.reactions),
   };
 }

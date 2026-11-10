@@ -24,6 +24,8 @@ const MAX_MEDIA_CAPTION_CHARS: usize = 4096;
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
 /// Максимальная длина поискового запроса.
 const MAX_SEARCH_QUERY_CHARS: usize = 128;
+/// Максимальная длина эмодзи-реакции в символах (эмодзи бывают составными).
+const MAX_REACTION_CHARS: usize = 8;
 
 fn client_ip(req: &HttpRequest) -> String {
     req.connection_info()
@@ -359,10 +361,11 @@ pub async fn get_history(
 
     match db.get_history(chat_id, offset, limit) {
         Ok(rows) => {
-            let messages: Vec<MessageItem> = rows
+            let mut messages: Vec<MessageItem> = rows
                 .into_iter()
                 .map(|row| message_item_from_row(row, user_id))
                 .collect();
+            attach_reactions(&db, chat_id, user_id, &mut messages);
             Ok(HttpResponse::Ok().json(messages))
         }
         Err(e) => Ok(server_error("failed to load history", e)),
@@ -392,6 +395,40 @@ fn message_item_from_row(row: crate::db::HistoryRow, viewer_id: i64) -> MessageI
         reply_to_sender_id: row.reply_sender_id,
         reply_to_is_media: row.reply_is_media,
         edited_at: row.edited_at,
+        reactions: Vec::new(),
+    }
+}
+
+/// Подмешивает агрегированные реакции к сообщениям одного диалога.
+fn attach_reactions(
+    db: &Database,
+    dialog_id: i64,
+    viewer_id: i64,
+    messages: &mut [MessageItem],
+) {
+    if messages.is_empty() {
+        return;
+    }
+    match db.get_dialog_reactions(dialog_id, viewer_id) {
+        Ok(by_message) => {
+            for item in messages.iter_mut() {
+                if let Some(list) = by_message.get(&item.id) {
+                    item.reactions = list
+                        .iter()
+                        .map(|reaction| ReactionItem {
+                            emoji: reaction.emoji.clone(),
+                            count: reaction.count,
+                            me: reaction.me,
+                        })
+                        .collect();
+                }
+            }
+        }
+        Err(e) => tracing::error!(
+            "failed to load reactions for dialog {}: {}",
+            dialog_id,
+            e
+        ),
     }
 }
 
@@ -438,10 +475,11 @@ pub async fn search_history(
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     match db.search_messages(chat_id, needle, limit) {
         Ok(rows) => {
-            let messages: Vec<MessageItem> = rows
+            let mut messages: Vec<MessageItem> = rows
                 .into_iter()
                 .map(|row| message_item_from_row(row, user_id))
                 .collect();
+            attach_reactions(&db, chat_id, user_id, &mut messages);
             Ok(HttpResponse::Ok().json(messages))
         }
         Err(e) => Ok(server_error("failed to search messages", e)),
@@ -1121,6 +1159,7 @@ pub async fn upload_media(
         reply_to_sender_id: None,
         reply_to_is_media: false,
         edited_at: None,
+        reactions: Vec::new(),
     }))
 }
 
@@ -1357,6 +1396,103 @@ pub async fn delete_message(
     state.broadcast_to_dialog(meta.dialog_id, &event, None);
 
     Ok(HttpResponse::Ok().json(json!({ "ok": true })))
+}
+
+/// Тело `POST /api/messages/{id}/reactions`.
+#[derive(Debug, serde::Deserialize)]
+pub struct ReactionBody {
+    pub emoji: String,
+}
+
+/// Переключает реакцию на сообщение: `POST /api/messages/{id}/reactions`.
+///
+/// Повторный вызов с тем же эмодзи снимает реакцию. В рассылку уходят только
+/// эмодзи и счётчики: флаг «моя реакция» у каждого зрителя свой.
+pub async fn toggle_reaction(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+    body: web::Json<ReactionBody>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let message_id = match path_id(&path, "id сообщения") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let emoji = body.emoji.trim();
+    if emoji.is_empty() {
+        return Ok(bad_request("emoji is empty"));
+    }
+    if emoji.chars().count() > MAX_REACTION_CHARS {
+        return Ok(bad_request("emoji is too long"));
+    }
+    if emoji.chars().any(|c| c.is_control()) {
+        return Ok(bad_request("emoji contains control characters"));
+    }
+
+    let meta = match db.get_message_meta(message_id) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => return Ok(not_found("message not found")),
+        Err(e) => return Ok(server_error("failed to load message", e)),
+    };
+    let participants = match dialog_participants(&db, meta.dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+
+    // Один эндпоинт и ставит, и снимает реакцию.
+    match db.add_reaction(message_id, user_id, emoji) {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(e) = db.remove_reaction(message_id, user_id, emoji) {
+                return Ok(server_error("failed to remove reaction", e));
+            }
+        }
+        Err(e) => return Ok(server_error("failed to add reaction", e)),
+    }
+
+    let reactions = match db.get_message_reactions(message_id, user_id) {
+        Ok(reactions) => reactions,
+        Err(e) => return Ok(server_error("failed to load reactions", e)),
+    };
+
+    // В рассылке нет `me`: у каждого подписчика этот флаг свой.
+    let broadcast_reactions: Vec<_> = reactions
+        .iter()
+        .map(|reaction| json!({ "emoji": reaction.emoji, "count": reaction.count }))
+        .collect();
+    let event = json!({
+        "type": "message_reactions",
+        "payload": {
+            "dialog_id": meta.dialog_id,
+            "message_id": message_id,
+            "reactions": broadcast_reactions,
+        }
+    })
+    .to_string();
+    state.broadcast_to_dialog(meta.dialog_id, &event, None);
+
+    let response_reactions: Vec<ReactionItem> = reactions
+        .into_iter()
+        .map(|reaction| ReactionItem {
+            emoji: reaction.emoji,
+            count: reaction.count,
+            me: reaction.me,
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok().json(json!({ "ok": true, "reactions": response_reactions })))
 }
 
 #[cfg(test)]

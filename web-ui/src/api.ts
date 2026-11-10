@@ -4,6 +4,7 @@ import type {
   LoginResponse,
   Me,
   Message,
+  ReactionItem,
   UserLookup,
 } from './types';
 import { parseMessagePayload } from './utils/message';
@@ -365,6 +366,20 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       return request<unknown>(`/messages/${encodeURIComponent(String(messageId))}`, {
         method: 'DELETE',
       });
+    },
+
+    /** Переключает реакцию: повторный вызов с тем же эмодзи снимает её. */
+    toggleReaction(
+      messageId: number,
+      emoji: string,
+    ): Promise<{ ok: boolean; reactions: ReactionItem[] }> {
+      return request<{ ok: boolean; reactions: ReactionItem[] }>(
+        `/messages/${encodeURIComponent(String(messageId))}/reactions`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ emoji }),
+        },
+      );
     },
 
     createPrivate(phone: string): Promise<ChatDetails> {

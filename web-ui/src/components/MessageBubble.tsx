@@ -18,10 +18,12 @@ import { AudioAttachment } from './media/AudioAttachment';
 import { FileAttachment } from './media/FileAttachment';
 import { MediaImage } from './media/MediaImage';
 
+/** Быстрые реакции в меню сообщения. */
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+
 interface OutgoingStatusProps {
   message: UiMessage;
 }
-
 function OutgoingStatus({ message }: OutgoingStatusProps) {
   if (message.pending) {
     return <Clock3 className="h-3 w-3" aria-label="Отправляется" />;
@@ -53,6 +55,7 @@ interface MessageBubbleProps {
   onReplyMessage: (message: UiMessage) => void;
   onEditMessage: (message: UiMessage) => void;
   onDeleteMessage: (message: UiMessage) => void;
+  onToggleReaction: (message: UiMessage, emoji: string) => void;
 }
 
 export function MessageBubble({
@@ -71,6 +74,7 @@ export function MessageBubble({
   onReplyMessage,
   onEditMessage,
   onDeleteMessage,
+  onToggleReaction,
 }: MessageBubbleProps) {
   const hasMedia = message.is_media === true;
   const hasImage = hasMedia && isImageMimeType(message.media_type);
@@ -162,6 +166,23 @@ export function MessageBubble({
                   isOwn ? 'right-0' : 'left-0',
                 )}
               >
+                {/* Быстрые реакции — без открытия полноценного пикера. */}
+                <div className="mb-1 flex items-center justify-between gap-0.5 border-b border-line-soft px-0.5 pb-1">
+                  {QUICK_REACTIONS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onToggleReaction(message, emoji);
+                      }}
+                      aria-label={`Реакция ${emoji}`}
+                      className="flex h-7 w-7 items-center justify-center rounded-lg text-base leading-none transition-colors hover:bg-panel-strong"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   role="menuitem"
@@ -287,6 +308,31 @@ export function MessageBubble({
             </div>
           </div>
         </div>
+
+        {message.reactions.length > 0 && (
+          <div className={cn('mt-1 flex flex-wrap gap-1', isOwn ? 'justify-end' : 'justify-start')}>
+            {message.reactions.map((reaction) => (
+              <button
+                key={reaction.emoji}
+                type="button"
+                onClick={() => onToggleReaction(message, reaction.emoji)}
+                aria-pressed={reaction.me}
+                aria-label={`Реакция ${reaction.emoji}: ${reaction.count}`}
+                className={cn(
+                  'flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-none transition-colors',
+                  reaction.me
+                    ? 'border-accent bg-accent-soft text-accent-strong'
+                    : 'border-line bg-panel text-muted hover:bg-panel-soft hover:text-ink',
+                )}
+              >
+                <span className="text-sm leading-none">{reaction.emoji}</span>
+                {reaction.count > 1 && (
+                  <span className="tabular-nums">{reaction.count}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
