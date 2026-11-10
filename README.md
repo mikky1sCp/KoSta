@@ -71,8 +71,9 @@ UI features: login/registration, profile with display name and avatar, chat list
 search and unread badges, private chats and groups, group administration
 (admin-only add/remove, rename, leave), online status, typing indicators, read
 receipts, replies with quotes, message editing and deletion, message search inside
-a chat, message history pagination, photo and file attachments, light/dark theme and
-a responsive mobile layout.
+a chat, emoji picker, desktop notifications with a sound for incoming messages,
+message history pagination, photo and file attachments, light/dark theme and a
+responsive mobile layout.
 
 ## End-to-end checks
 

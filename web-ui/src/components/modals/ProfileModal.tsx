@@ -3,6 +3,7 @@ import { Camera, LogOut, Moon, Sun, Wifi, WifiOff } from 'lucide-react';
 import type { Api } from '../../api';
 import { avatarUrl } from '../../api';
 import type { Me, Theme, WsStatus } from '../../types';
+import type { NotificationsApi } from '../../hooks/useNotifications';
 import { getErrorMessage } from '../../utils/errors';
 import { Modal } from '../ui/Modal';
 import { Avatar } from '../ui/Avatar';
@@ -17,6 +18,8 @@ interface ProfileModalProps {
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
   wsStatus: WsStatus;
+  /** Уведомления и звук нового сообщения. */
+  notifications: NotificationsApi;
   /** Сохранена ли сессия на этом устройстве. */
   sessionPersisted: boolean;
   onTogglePersistence: (persist: boolean) => void;
@@ -51,6 +54,7 @@ export function ProfileModal({
   theme,
   onThemeChange,
   wsStatus,
+  notifications,
   sessionPersisted,
   onTogglePersistence,
   onProfileChange,
@@ -64,6 +68,14 @@ export function ProfileModal({
   const [error, setError] = useState('');
   const [avatarVersion, setAvatarVersion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleToggleNotifications(enabled: boolean) {
+    setError('');
+    const ok = await notifications.setEnabled(enabled);
+    if (enabled && !ok) {
+      setError('Не удалось включить уведомления: разрешение не выдано.');
+    }
+  }
 
   async function handleSaveName() {
     if (saving) {
@@ -253,6 +265,45 @@ export function ProfileModal({
             <span className={cn('text-xs font-medium', STATUS_COLOR[wsStatus])}>
               {STATUS_LABEL[wsStatus]}
             </span>
+          </div>
+        </section>
+
+        <section>
+          <p className="mb-1.5 text-xs font-medium text-muted">Уведомления</p>
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line bg-panel-soft px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={notifications.settings.enabled}
+                onChange={(event) => void handleToggleNotifications(event.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-ink">Показывать уведомления</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                  {notifications.permission === 'unsupported'
+                    ? 'Браузер не поддерживает системные уведомления.'
+                    : notifications.permission === 'denied'
+                      ? 'Разрешение заблокировано в настройках браузера для этого сайта.'
+                      : 'Всплывают, когда вкладка свёрнута или неактивна.'}
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line bg-panel-soft px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={notifications.settings.sound}
+                onChange={(event) => notifications.setSound(event.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-ink">Звук нового сообщения</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                  Короткий сигнал на входящие сообщения.
+                </span>
+              </span>
+            </label>
           </div>
         </section>
 

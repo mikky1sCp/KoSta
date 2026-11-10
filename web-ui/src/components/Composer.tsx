@@ -5,7 +5,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { Paperclip, Send, WifiOff, X } from 'lucide-react';
+import { Paperclip, Send, Smile, WifiOff, X } from 'lucide-react';
 import { MEDIA_ACCEPT } from '../api';
 import { formatBytes } from '../utils/format';
 import {
@@ -15,6 +15,7 @@ import {
 } from '../utils/media';
 import { cn } from '../utils/classNames';
 import { FileKindIcon } from './media/FileKindIcon';
+import { EmojiPicker } from './ui/EmojiPicker';
 
 const MAX_MESSAGE_LENGTH = 4096;
 
@@ -62,6 +63,7 @@ export function Composer({
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -215,6 +217,28 @@ export function Composer({
     onDraftChange(chatId, value);
   }
 
+  /** Вставляет эмодзи в позицию курсора (а не в конец строки). */
+  function insertEmoji(emoji: string) {
+    const textarea = textareaRef.current;
+    const value = textRef.current;
+    const start = textarea?.selectionStart ?? value.length;
+    const end = textarea?.selectionEnd ?? value.length;
+    const next = value.slice(0, start) + emoji + value.slice(end);
+    textRef.current = next;
+    setText(next);
+    onDraftChange(chatId, next);
+    onTypingInput(next.trim().length > 0);
+    setEmojiOpen(false);
+    window.requestAnimationFrame(() => {
+      if (!textarea) {
+        return;
+      }
+      textarea.focus();
+      const caret = start + emoji.length;
+      textarea.setSelectionRange(caret, caret);
+    });
+  }
+
   const sendLabel = editing
     ? 'Сохранить изменения'
     : pendingFile
@@ -328,6 +352,29 @@ export function Composer({
             aria-hidden="true"
             className="hidden"
           />
+
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setEmojiOpen((open) => !open)}
+              disabled={uploading}
+              aria-label="Эмодзи"
+              title="Эмодзи"
+              aria-expanded={emojiOpen}
+              className={cn(
+                'flex h-10 w-10 items-center justify-center rounded-xl transition-colors hover:bg-panel-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50',
+                emojiOpen ? 'bg-panel-strong text-ink' : 'text-muted',
+              )}
+            >
+              <Smile className="h-4 w-4" aria-hidden="true" />
+            </button>
+            {emojiOpen && (
+              <EmojiPicker
+                onPick={insertEmoji}
+                onClose={() => setEmojiOpen(false)}
+              />
+            )}
+          </div>
 
           <button
             type="button"

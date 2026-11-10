@@ -15,6 +15,7 @@ import { downloadMedia, messagePreview } from './utils/media';
 import { useTheme } from './hooks/useTheme';
 import { useToasts } from './hooks/useToasts';
 import { useDrafts } from './hooks/useDrafts';
+import { useNotifications } from './hooks/useNotifications';
 import { clearStoredSession, loadStoredSession, saveStoredSession } from './utils/session';
 import { AuthScreen } from './components/AuthScreen';
 import { Sidebar } from './components/Sidebar';
@@ -167,6 +168,7 @@ export function App() {
   const [theme, setTheme, toggleTheme] = useTheme();
   const { toasts, remove, toast } = useToasts();
   const drafts = useDrafts();
+  const notifications = useNotifications();
 
   const [session, setSession] = useState<Session | null>(() => {
     const stored = loadStoredSession();
@@ -733,6 +735,18 @@ export function App() {
           }
         }
 
+        // Уведомление и звук — только для входящих: свои сообщения
+        // пользователь и так видит.
+        if (!isOutgoing) {
+          notifications.ping();
+          const chatTitle =
+            chatsRef.current.find((chat) => chat.id === dialogId)?.title ??
+            'KoSta';
+          notifications.notify(chatTitle, messagePreview(uiMessage), () => {
+            setActiveChatId(dialogId);
+          });
+        }
+
         if (!chatsRef.current.some((chat) => chat.id === dialogId)) {
           void refreshChats({ silent: true });
         } else {
@@ -1292,6 +1306,7 @@ export function App() {
           theme={theme}
           onThemeChange={setTheme}
           wsStatus={wsStatus}
+          notifications={notifications}
           sessionPersisted={session.persist}
           onTogglePersistence={(persist) => {
             setSession((current) => (current ? { ...current, persist } : current));
