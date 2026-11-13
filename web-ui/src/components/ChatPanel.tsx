@@ -51,6 +51,10 @@ interface ChatPanelProps {
   /** Может ли текущий пользователь закреплять (в группе — только админ). */
   canPin: boolean;
   onTogglePin: (message: UiMessage) => void;
+  /** Сообщение, к которому нужно прокрутить ленту (из глобального поиска). */
+  scrollToMessageId: number | null;
+  /** Прокрутка выполнена — приложение может сбросить цель. */
+  onScrollToMessageDone?: () => void;
   initialDraft: string;
   onDraftChange: (chatId: number, text: string) => void;
   className?: string;
@@ -119,6 +123,8 @@ function ChatView({
   pinnedMessage,
   canPin,
   onTogglePin,
+  scrollToMessageId,
+  onScrollToMessageDone,
   initialDraft,
   onDraftChange,
 }: Omit<ChatPanelProps, 'className' | 'chat'> & { chat: ChatItem }) {
@@ -288,6 +294,7 @@ function ChatView({
               pinnedMessageId={pinnedMessage?.id ?? null}
               canPin={canPin}
               onTogglePin={onTogglePin}
+              scrollToMessageId={null}
             />
           )}
         </div>
@@ -315,6 +322,8 @@ function ChatView({
               pinnedMessageId={pinnedMessage?.id ?? null}
               canPin={canPin}
               onTogglePin={onTogglePin}
+              scrollToMessageId={scrollToMessageId}
+              onScrollToMessageDone={onScrollToMessageDone}
         />
       )}
 

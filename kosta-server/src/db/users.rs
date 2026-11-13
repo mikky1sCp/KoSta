@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 use rusqlite::OptionalExtension;
 
-use super::{Database, UserProfileRow};
+use super::{Database, UserProfileRow, UserSearchRow};
 
 impl Database {
     // ----- Пользователи -----
@@ -61,15 +61,115 @@ impl Database {
         } else {
             Some(trimmed)
         };
+        let lower: Option<String> = value.map(|name| name.to_lowercase());
         let conn = self.get_conn()?;
         let updated = conn.execute(
-            "UPDATE users SET display_name = ?1 WHERE id = ?2",
+            "UPDATE users SET display_name = ?1, display_name_lower = ?2 WHERE id = ?3",
+            rusqlite::params![value, lower, user_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("пользователь {} не найден", user_id));
+        }
+        Ok(())
+    }
+
+    /// Ставит публичный `@username`. Пустая строка снимает username.
+    ///
+    /// Уникальность обеспечивает индекс `idx_users_username`; здесь заранее
+    /// проверяем занятость, чтобы отдать понятную ошибку, а не 500 от SQLite.
+    pub fn update_username(&self, user_id: i64, username: &str) -> Result<()> {
+        let trimmed = username.trim().trim_start_matches('@');
+        let value: Option<String> = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_lowercase())
+        };
+        if let Some(candidate) = value.as_deref() {
+            if let Some(existing) = self.find_user_by_username(candidate)? {
+                if existing != user_id {
+                    return Err(anyhow!("username is already taken"));
+                }
+            }
+        }
+        let conn = self.get_conn()?;
+        let updated = conn.execute(
+            "UPDATE users SET username = ?1 WHERE id = ?2",
             rusqlite::params![value, user_id],
         )?;
         if updated == 0 {
             return Err(anyhow!("пользователь {} не найден", user_id));
         }
         Ok(())
+    }
+
+    /// Точный поиск по `@username` (без учёта регистра).
+    pub fn find_user_by_username(&self, username: &str) -> Result<Option<i64>> {
+        let needle = username.trim().trim_start_matches('@').to_lowercase();
+        let conn = self.get_conn()?;
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM users WHERE username = ?1",
+                rusqlite::params![needle],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found)
+    }
+
+    /// Поиск людей по `@username` (префикс) или отображаемому имени (подстрока).
+    ///
+    /// Возвращает только безопасные для показа поля — без телефона и хеша
+    /// пароля. Системный пользователь (`id = 0`) и сам искатель исключены.
+    pub fn search_users(
+        &self,
+        query: &str,
+        limit: i32,
+        exclude_user_id: i64,
+    ) -> Result<Vec<UserSearchRow>> {
+        let needle = query.trim().to_lowercase();
+        let limit = limit.clamp(1, 50);
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.username, u.display_name, u.avatar_key,
+                    COALESCE(us.status = 0, 0)
+             FROM users u
+             LEFT JOIN user_status us ON us.user_id = u.id
+             WHERE u.id <> 0 AND u.id <> ?1
+               AND (u.username LIKE ?2 ESCAPE '\\' OR u.display_name_lower LIKE ?3 ESCAPE '\\')
+             ORDER BY u.username IS NULL, u.id
+             LIMIT ?4",
+        )?;
+        let username_needle = format!("%{}%", Self::escape_like(&needle));
+        let name_needle = format!("%{}%", Self::escape_like(&needle));
+        let rows = stmt.query_map(
+            rusqlite::params![exclude_user_id, username_needle, name_needle, limit],
+            |row| {
+                Ok(UserSearchRow {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    display_name: row.get(2)?,
+                    avatar_key: row.get(3)?,
+                    is_online: row.get::<_, i64>(4)? != 0,
+                })
+            },
+        )?;
+        let mut found = Vec::new();
+        for row in rows {
+            found.push(row?);
+        }
+        Ok(found)
+    }
+
+    /// Экранирует спецсимволы `LIKE` (`%`, `_` и сам `\`).
+    fn escape_like(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+        for ch in value.chars() {
+            if matches!(ch, '\\' | '%' | '_') {
+                escaped.push('\\');
+            }
+            escaped.push(ch);
+        }
+        escaped
     }
 
     /// Ставит ключ аватара и возвращает предыдущий (чтобы удалить файл).
@@ -131,7 +231,7 @@ impl Database {
         let conn = self.get_conn()?;
         let profile = conn
             .query_row(
-                "SELECT u.phone, COALESCE(us.status = 0, 0), u.display_name, u.avatar_key
+                "SELECT u.phone, COALESCE(us.status = 0, 0), u.display_name, u.avatar_key, u.username
                  FROM users u
                  LEFT JOIN user_status us ON us.user_id = u.id
                  WHERE u.id = ?1",
@@ -142,6 +242,7 @@ impl Database {
                         is_online: row.get::<_, i64>(1)? != 0,
                         display_name: row.get(2)?,
                         avatar_key: row.get(3)?,
+                        username: row.get(4)?,
                     })
                 },
             )

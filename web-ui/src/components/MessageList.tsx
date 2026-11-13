@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, MessageSquare } from 'lucide-react';
 import type { Api } from '../api';
 import type { Participant, UiMessage } from '../types';
@@ -47,6 +47,10 @@ interface MessageListProps {
   /** Может ли пользователь закреплять сообщения. */
   canPin: boolean;
   onTogglePin: (message: UiMessage) => void;
+  /** Сообщение, к которому нужно прокрутить ленту (из глобального поиска). */
+  scrollToMessageId: number | null;
+  /** Прокрутка выполнена — приложение может сбросить цель. */
+  onScrollToMessageDone?: () => void;
 }
 
 function MessagesSkeleton() {
@@ -92,6 +96,8 @@ export function MessageList({
   pinnedMessageId,
   canPin,
   onTogglePin,
+  scrollToMessageId,
+  onScrollToMessageDone,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -151,6 +157,29 @@ export function MessageList({
       setShowJump(true);
     }
   }, [messages, loading, chatId, restoring]);
+
+  // Прокрутка к сообщению из глобального поиска. Ждём окончания загрузки,
+  // иначе цель ещё не отрисована. Если сообщение не попало в загруженную
+  // страницу, цель остаётся — повторная попытка будет при догрузке истории.
+  useEffect(() => {
+    if (scrollToMessageId === null || loading) {
+      return;
+    }
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    const target = element.querySelector<HTMLElement>(
+      `[data-message-id="${scrollToMessageId}"]`,
+    );
+    if (!target) {
+      return;
+    }
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    nearBottomRef.current = false;
+    setShowJump(true);
+    onScrollToMessageDone?.();
+  }, [scrollToMessageId, messages.length, loading, onScrollToMessageDone]);
 
   function handleScroll() {
     const element = scrollRef.current;

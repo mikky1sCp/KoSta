@@ -100,6 +100,29 @@ pub struct UserProfileRow {
     pub display_name: Option<String>,
     pub avatar_key: Option<String>,
     pub is_online: bool,
+    /// Публичный `@username` (если пользователь его задал).
+    pub username: Option<String>,
+}
+
+/// Результат поиска людей: то, что можно безопасно показать любому
+/// авторизованному пользователю. Телефон сюда не попадает — по username
+/// можно найти человека, но не увидеть его номер.
+#[derive(Debug, Clone)]
+pub struct UserSearchRow {
+    pub id: i64,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_key: Option<String>,
+    pub is_online: bool,
+}
+
+/// Сообщение из глобального поиска: сама строка истории плюс диалог,
+/// в котором она лежит (чтобы UI мог показать «куда перейти»).
+#[derive(Debug, Clone)]
+pub struct GlobalSearchHit {
+    pub dialog_id: i64,
+    pub title: String,
+    pub row: HistoryRow,
 }
 
 #[derive(Debug, Clone)]
@@ -160,5 +183,19 @@ pub(super) fn history_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<
         reply_text: row.get(13)?,
         reply_sender_id: row.get(14)?,
         reply_is_media: row.get::<_, Option<String>>(15)?.is_some(),
+    })
+}
+
+/// Собирает `GlobalSearchHit` из строки глобального поиска.
+///
+/// Первые 16 колонок совпадают с `history_row_from_row`, затем идут
+/// `dialog_id` и `title` — так один SQL-запрос отдаёт и сообщение, и диалог.
+pub(super) fn global_search_row_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<GlobalSearchHit> {
+    Ok(GlobalSearchHit {
+        dialog_id: row.get(16)?,
+        title: row.get(17)?,
+        row: history_row_from_row(row)?,
     })
 }

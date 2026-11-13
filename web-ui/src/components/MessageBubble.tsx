@@ -134,6 +134,7 @@ export function MessageBubble({
 
   return (
     <div
+      data-message-id={message.id}
       className={cn(
         'animate-fade-in-up flex w-full',
         // Анимация создаёт собственный контекст наложения у каждого сообщения,

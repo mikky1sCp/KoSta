@@ -89,6 +89,12 @@ const search = (token, chatId, query) =>
     { token },
   );
 
+const searchGlobal = (token, query) =>
+  req(`/api/search?q=${encodeURIComponent(query)}`, { token });
+
+const searchUsers = (token, query) =>
+  req(`/api/users?q=${encodeURIComponent(query)}`, { token });
+
 console.log(`KoSta search e2e -> ${BASE}\n`);
 
 const stamp = String(Date.now()).slice(-7);
@@ -202,6 +208,81 @@ const deleteRes = await req(`/api/messages/${firstId}`, { method: 'DELETE', toke
 check('сообщение удалено', deleteRes.status === 200, `status ${deleteRes.status}`);
 const afterDelete = await search(tokenA, dialogId, 'переименовано');
 check('удалённое сообщение не находится', afterDelete.body?.length === 0, String(afterDelete.body?.length));
+
+// ---------- Глобальный поиск (без chat_id) ----------
+const usernameA = `kosta${stamp}`;
+const profilePatch = await req('/api/me', {
+  method: 'PATCH',
+  token: tokenA,
+  body: { display_name: 'Аня', username: usernameA },
+});
+check('username задан', profilePatch.status === 200 && profilePatch.body?.username === usernameA, `status ${profilePatch.status}`);
+
+const me = await req('/api/me', { token: tokenA });
+check('GET /api/me отдаёт username', me.body?.username === usernameA, JSON.stringify(me.body?.username));
+
+const globalHit = await searchGlobal(tokenA, 'ПРИВЕТ');
+check(
+  'глобальный поиск находит сообщение без chat_id',
+  globalHit.status === 200 &&
+    globalHit.body?.length === 1 &&
+    globalHit.body[0]?.chat_id === dialogId &&
+    typeof globalHit.body[0]?.chat_title === 'string',
+  `status ${globalHit.status}, найдено ${globalHit.body?.length}`,
+);
+
+const globalNone = await searchGlobal(tokenA, 'нетакоготекста');
+check('глобальный поиск без совпадений — пустой массив', Array.isArray(globalNone.body) && globalNone.body.length === 0);
+
+const globalNoToken = await searchGlobal(undefined, 'привет');
+check('глобальный поиск без токена -> 401', globalNoToken.status === 401, `status ${globalNoToken.status}`);
+
+// ---------- Поиск людей ----------
+const usersByUsername = await searchUsers(tokenB, usernameA);
+check(
+  'поиск людей по username',
+  usersByUsername.status === 200 &&
+    usersByUsername.body?.length === 1 &&
+    usersByUsername.body[0]?.user_id === loginA.body?.user_id &&
+    usersByUsername.body[0]?.username === usernameA,
+  `status ${usersByUsername.status}, найдено ${usersByUsername.body?.length}`,
+);
+
+const usersByDisplayName = await searchUsers(tokenB, 'Аня');
+check(
+  'поиск людей по кириллическому имени',
+  usersByDisplayName.status === 200 &&
+    usersByDisplayName.body?.some((u) => u.user_id === loginA.body?.user_id),
+  `status ${usersByDisplayName.status}`,
+);
+
+const usersSelf = await searchUsers(tokenA, usernameA);
+check(
+  'поиск людей не показывает самого себя',
+  usersSelf.status === 200 && usersSelf.body?.length === 0,
+  `status ${usersSelf.status}, найдено ${usersSelf.body?.length}`,
+);
+
+const usersNone = await searchUsers(tokenB, 'нетакогочеловека');
+check('поиск людей без совпадений — пустой массив', Array.isArray(usersNone.body) && usersNone.body.length === 0);
+
+const usersEmpty = await searchUsers(tokenB, '   ');
+check('пустой запрос людей -> 400', usersEmpty.status === 400, `status ${usersEmpty.status}`);
+
+const usersNoToken = await searchUsers(undefined, usernameA);
+check('поиск людей без токена -> 401', usersNoToken.status === 401, `status ${usersNoToken.status}`);
+
+// Чат по username: B уже в диалоге с A — должен получить тот же чат.
+const chatByUsername = await req('/api/chats/private', {
+  method: 'POST',
+  token: tokenB,
+  body: { username: usernameA },
+});
+check(
+  'диалог создаётся по username и переиспользуется',
+  chatByUsername.status === 200 && chatByUsername.body?.chat?.id === dialogId,
+  `status ${chatByUsername.status}, id ${chatByUsername.body?.chat?.id}`,
+);
 
 wsA.close();
 

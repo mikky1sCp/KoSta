@@ -63,6 +63,7 @@ export function ProfileModal({
 }: ProfileModalProps) {
   const phone = me?.phone ?? fallbackPhone;
   const [name, setName] = useState(me?.display_name ?? '');
+  const [username, setUsername] = useState(me?.username ?? '');
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
@@ -84,9 +85,14 @@ export function ProfileModal({
     setSaving(true);
     setError('');
     try {
-      const updated = await api.updateProfile(name);
+      const trimmedUsername = username.trim();
+      const updated = await api.updateProfile(
+        name,
+        trimmedUsername === '' ? null : trimmedUsername,
+      );
       onProfileChange(updated);
       setName(updated.display_name ?? '');
+      setUsername(updated.username ?? '');
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -185,11 +191,10 @@ export function ProfileModal({
       </div>
 
       <div className="mt-4 space-y-4">
-        <section>
-          <p className="mb-1.5 text-xs font-medium text-muted">Ваше имя</p>
-          <div className="flex items-end gap-2">
+        <section className="space-y-2">
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-muted">Ваше имя</p>
             <TextInput
-              containerClassName="flex-1"
               aria-label="Ваше имя"
               placeholder="Как вас называть"
               value={name}
@@ -197,18 +202,35 @@ export function ProfileModal({
               onChange={(event) => setName(event.target.value)}
               disabled={saving}
             />
+            <p className="mt-1 text-[11px] text-muted">
+              Имя видят собеседники вместо номера телефона.
+            </p>
+          </div>
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-muted">@username</p>
+            <TextInput
+              aria-label="Username"
+              placeholder="например, anya"
+              value={username}
+              maxLength={32}
+              onChange={(event) => setUsername(event.target.value)}
+              disabled={saving}
+              hint="По нему вас можно найти в поиске. 3–32 символа: латиница, цифры и _."
+            />
+          </div>
+          <div className="flex justify-end">
             <Button
               variant="secondary"
               loading={saving}
-              disabled={name.trim() === (me?.display_name ?? '')}
+              disabled={
+                name.trim() === (me?.display_name ?? '') &&
+                username.trim() === (me?.username ?? '')
+              }
               onClick={() => void handleSaveName()}
             >
               Сохранить
             </Button>
           </div>
-          <p className="mt-1 text-[11px] text-muted">
-            Имя видят собеседники вместо номера телефона.
-          </p>
         </section>
 
         {error && (

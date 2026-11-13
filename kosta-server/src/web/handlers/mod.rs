@@ -14,7 +14,7 @@ pub use chats::{
 };
 pub use media::{download_media, upload_media};
 pub use messages::{delete_message, edit_message, get_history, search_history, toggle_reaction};
-pub use profile::{get_avatar, get_me, lookup_user, update_me, upload_avatar};
+pub use profile::{get_avatar, get_me, lookup_user, search_users, update_me, upload_avatar};
 
 // Тела запросов остаются частью публичного API модуля (на них ссылаются
 // сигнатуры хендлеров), но по пути реэкспорта в бинарном крейте не читаются.

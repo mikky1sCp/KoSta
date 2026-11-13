@@ -44,12 +44,16 @@ Revokes the token and closes the user's WebSocket connections. Returns
   "user_id": 7,
   "phone": "+79990000000",
   "display_name": "Аня",
+  "username": "anya",
   "has_avatar": true,
   "is_online": true
 }
 ```
 
 `display_name` is `null` until the user sets one; clients then show the phone.
+`username` is the public `@handle` (3..32 characters, latin letters/digits/`_`,
+must start with a letter; `null` when not set). It is searchable by other users
+and can be used to start a chat without knowing the phone number.
 `has_avatar` tells whether `GET /api/avatars/{user_id}` returns an image.
 
 The web client stores the token in memory by default and, when the user enables
@@ -59,11 +63,14 @@ Logging out, or any `401`, clears that entry.
 
 ### PATCH /api/me
 
-Update your own profile. Body: `{"display_name": "Аня"}` (up to 64 characters;
-an empty or blank string resets the name back to the phone number).
+Update your own profile. Body: `{"display_name": "Аня", "username": "anya"}`
+(`display_name` up to 64 characters; an empty or blank string resets the name back
+to the phone number). `username` is optional: omitted — leave as is, `""` — remove,
+otherwise set it (same format as in `GET /api/me`; a taken username returns `409`).
 
 - `200` — the updated `MeResponse` (same shape as `GET /api/me`).
-- `400` — the name is too long; `401` — no valid token.
+- `400` — the name is too long or the username is malformed; `409` — the username is
+  already taken; `401` — no valid token.
 
 ### POST /api/me/avatar
 
@@ -147,9 +154,26 @@ deleted), `reply_to_sender_id` its author and `reply_to_is_media` tells whether 
 quoted message was an attachment. `edited_at` is the last edit time in unix seconds,
 or `null` if the message was never edited.
 
+### GET /api/search?q=привет&limit=50
+
+Global search across all dialogs of the current user. Returns an array of hits with
+the dialog context, so the client can jump straight to the message:
+
+```json
+[
+  {
+    "chat_id": 12,
+    "chat_title": "+79990000001",
+    "message": { "id": 105, "text": "привет", "...": "..." }
+  }
+]
+```
+
+`message` has the same shape as in `/api/history` (including reactions).
+
 ### GET /api/search?chat_id=12&q=привет&limit=50
 
-Search the dialog's messages by text, case-insensitively (Cyrillic included) and
+Search a single dialog's messages by text, case-insensitively (Cyrillic included) and
 ignoring deleted messages. Returns an array of `MessageItem` (same shape as
 `/api/history`), newest first; `limit` is clamped to 1..=200 and defaults to 50.
 
@@ -242,8 +266,15 @@ Pin a message or clear the pin. Body: `{"message_id": 105}`, or
 {"phone": "+79990000001"}
 ```
 
-Finds or creates a private dialog. `400` for an invalid phone number or a dialog with
-yourself, `404` if the user does not exist. `200` — `ChatDetails`.
+Finds or creates a private dialog. Either `phone` or `username` is enough (the latter
+is handy for people found via `GET /api/users?q=`):
+
+```json
+{"username": "anya"}
+```
+
+`400` for an invalid phone number or a dialog with yourself, `404` if the user does
+not exist. `200` — `ChatDetails`.
 
 ### POST /api/chats/group
 
@@ -291,6 +322,27 @@ It also broadcasts a `messages_read` event to the dialog subscribers (see below)
 Exact user lookup by phone number (for "new chat" / "add participant").
 Available to authenticated users, rate-limited. Returns
 `200 {"user_id": 8, "phone": "+7999..."}` or `404 {"error":"user not found"}`.
+
+### GET /api/users?q=аня
+
+Search people by `@username` or display name (case-insensitive, Cyrillic included).
+Returns up to 20 users; the caller is excluded from results. The phone number is
+never returned — only the public `username`, so people can find each other without
+exposing numbers.
+
+```json
+[
+  {
+    "user_id": 7,
+    "username": "anya",
+    "display_name": "Аня",
+    "has_avatar": true,
+    "is_online": true
+  }
+]
+```
+
+- `400` — empty or longer than 128 characters query; `401` — no valid token.
 
 ## Media
 

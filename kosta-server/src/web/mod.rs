@@ -142,6 +142,7 @@ pub fn run_web_server(
                             "/media/{message_id}",
                             web::get().to(handlers::download_media),
                         )
+                        .route("/users", web::get().to(handlers::search_users))
                         .route("/users/lookup", web::get().to(handlers::lookup_user)),
                 )
                 // --- Health & Metrics ---

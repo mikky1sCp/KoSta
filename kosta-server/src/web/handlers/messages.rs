@@ -7,7 +7,7 @@ use crate::db::Database;
 use crate::rate_limiter::{check_limit, HTTP_LIMITER};
 use crate::web::auth;
 use crate::web::client_addr::client_ip;
-use crate::web::models::{GetHistoryQuery, MessageItem, ReactionItem};
+use crate::web::models::{GetHistoryQuery, GlobalSearchHitItem, MessageItem, ReactionItem};
 use crate::web::state::WebState;
 
 use super::{
@@ -112,15 +112,21 @@ fn attach_reactions(db: &Database, dialog_id: i64, viewer_id: i64, messages: &mu
 }
 
 /// Параметры `GET /api/search`.
+///
+/// `chat_id` необязателен: без него поиск идёт по всем диалогам пользователя
+/// (глобальный поиск), с ним — только внутри указанного диалога.
 #[derive(Debug, serde::Deserialize)]
 pub struct SearchQuery {
-    pub chat_id: i64,
+    pub chat_id: Option<i64>,
     pub q: String,
     #[serde(default)]
     pub limit: Option<i32>,
 }
 
-/// Поиск по истории диалога: `GET /api/search?chat_id=12&q=текст`.
+/// Поиск по сообщениям.
+///
+/// `GET /api/search?chat_id=12&q=текст` — только внутри диалога (как раньше);
+/// `GET /api/search?q=текст` — по всем диалогам пользователя.
 pub async fn search_history(
     req: HttpRequest,
     db: web::Data<Arc<Database>>,
@@ -142,26 +148,83 @@ pub async fn search_history(
         return Ok(bad_request("query is too long (max 128 characters)"));
     }
 
-    let chat_id = query.chat_id;
-    let participants = match dialog_participants(&db, chat_id) {
-        Ok(participants) => participants,
-        Err(resp) => return Ok(resp),
-    };
-    if !participants.contains(&user_id) {
-        return Ok(forbidden("not a participant"));
-    }
-
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    match db.search_messages(chat_id, needle, limit) {
-        Ok(rows) => {
-            let mut messages: Vec<MessageItem> = rows
-                .into_iter()
-                .map(|row| message_item_from_row(row, user_id))
-                .collect();
-            attach_reactions(&db, chat_id, user_id, &mut messages);
-            Ok(HttpResponse::Ok().json(messages))
+
+    match query.chat_id {
+        Some(chat_id) => {
+            let participants = match dialog_participants(&db, chat_id) {
+                Ok(participants) => participants,
+                Err(resp) => return Ok(resp),
+            };
+            if !participants.contains(&user_id) {
+                return Ok(forbidden("not a participant"));
+            }
+
+            match db.search_messages(chat_id, needle, limit) {
+                Ok(rows) => {
+                    let mut messages: Vec<MessageItem> = rows
+                        .into_iter()
+                        .map(|row| message_item_from_row(row, user_id))
+                        .collect();
+                    attach_reactions(&db, chat_id, user_id, &mut messages);
+                    Ok(HttpResponse::Ok().json(messages))
+                }
+                Err(e) => Ok(server_error("failed to search messages", e)),
+            }
         }
-        Err(e) => Ok(server_error("failed to search messages", e)),
+        None => {
+            let hits = match db.search_messages_global(user_id, needle, limit) {
+                Ok(hits) => hits,
+                Err(e) => return Ok(server_error("failed to search messages", e)),
+            };
+            // Реакции грузим один раз на диалог, а не на каждое сообщение.
+            let mut reactions_by_dialog: std::collections::HashMap<
+                i64,
+                std::collections::HashMap<i64, Vec<crate::db::ReactionRow>>,
+            > = std::collections::HashMap::new();
+            for hit in &hits {
+                if reactions_by_dialog.contains_key(&hit.dialog_id) {
+                    continue;
+                }
+                match db.get_dialog_reactions(hit.dialog_id, user_id) {
+                    Ok(by_message) => {
+                        reactions_by_dialog.insert(hit.dialog_id, by_message);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "failed to load reactions for dialog {}: {}",
+                            hit.dialog_id,
+                            e
+                        );
+                    }
+                }
+            }
+
+            let items: Vec<GlobalSearchHitItem> = hits
+                .into_iter()
+                .map(|hit| {
+                    let mut message = message_item_from_row(hit.row, user_id);
+                    if let Some(by_message) = reactions_by_dialog.get(&hit.dialog_id) {
+                        if let Some(list) = by_message.get(&message.id) {
+                            message.reactions = list
+                                .iter()
+                                .map(|reaction| ReactionItem {
+                                    emoji: reaction.emoji.clone(),
+                                    count: reaction.count,
+                                    me: reaction.me,
+                                })
+                                .collect();
+                        }
+                    }
+                    GlobalSearchHitItem {
+                        chat_id: hit.dialog_id,
+                        chat_title: hit.title,
+                        message,
+                    }
+                })
+                .collect();
+            Ok(HttpResponse::Ok().json(items))
+        }
     }
 }
 

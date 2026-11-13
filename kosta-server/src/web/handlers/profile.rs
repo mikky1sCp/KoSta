@@ -8,9 +8,12 @@ use crate::media;
 use crate::rate_limiter::{check_limit, HTTP_LIMITER};
 use crate::web::auth;
 use crate::web::client_addr::client_ip;
-use crate::web::models::{LookupQuery, LookupResponse, MeResponse};
+use crate::web::models::{LookupQuery, LookupResponse, MeResponse, UserSearchItem};
 
-use super::{bad_request, not_found, path_id, rate_limited, server_error, MAX_DISPLAY_NAME_CHARS};
+use super::{
+    bad_request, not_found, path_id, rate_limited, server_error, MAX_DISPLAY_NAME_CHARS,
+    MAX_SEARCH_QUERY_CHARS,
+};
 
 /// Профиль текущего пользователя.
 ///
@@ -38,6 +41,7 @@ pub async fn get_me(req: HttpRequest, db: web::Data<Arc<Database>>) -> Result<Ht
         user_id,
         phone: profile.phone,
         display_name: profile.display_name,
+        username: profile.username,
         has_avatar: profile.avatar_key.is_some(),
         is_online: profile.is_online,
     }))
@@ -47,6 +51,36 @@ pub async fn get_me(req: HttpRequest, db: web::Data<Arc<Database>>) -> Result<Ht
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateProfileBody {
     pub display_name: String,
+    /// `None` — не трогать; `Some("")` — снять username; иначе задать.
+    #[serde(default)]
+    pub username: Option<String>,
+}
+
+/// Проверяет и нормализует `@username`: 3–32 символа, латиница/цифры/`_`,
+/// первый символ — буква. Пустая строка означает «снять username».
+fn normalize_username(raw: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim().trim_start_matches('@');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let lowered = trimmed.to_lowercase();
+    let chars: Vec<char> = lowered.chars().collect();
+    if chars.len() < 3 || chars.len() > 32 {
+        return Err("username must be 3–32 characters".to_string());
+    }
+    if !chars[0].is_ascii_lowercase() {
+        return Err("username must start with a letter".to_string());
+    }
+    if !chars
+        .iter()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || *ch == '_')
+    {
+        return Err("username may contain only a-z, 0-9 and _".to_string());
+    }
+    if chars.last() == Some(&'_') {
+        return Err("username must not end with _".to_string());
+    }
+    Ok(Some(lowered))
 }
 
 /// Правка своего профиля: `PATCH /api/me`.
@@ -71,6 +105,28 @@ pub async fn update_me(
         return Ok(server_error("failed to update profile", e));
     }
 
+    // username необязателен: отсутствие поля — «не менять», пустая строка — «снять».
+    if let Some(raw_username) = body.username.as_deref() {
+        match normalize_username(raw_username) {
+            Ok(Some(username)) => {
+                if let Err(e) = db.update_username(user_id, &username) {
+                    let message = e.to_string();
+                    if message.contains("already taken") {
+                        return Ok(HttpResponse::Conflict()
+                            .json(json!({ "error": "username is already taken" })));
+                    }
+                    return Ok(server_error("failed to update username", e));
+                }
+            }
+            Ok(None) => {
+                if let Err(e) = db.update_username(user_id, "") {
+                    return Ok(server_error("failed to clear username", e));
+                }
+            }
+            Err(message) => return Ok(bad_request(&message)),
+        }
+    }
+
     let profile = match db.get_user_profile(user_id) {
         Ok(Some(profile)) => profile,
         Ok(None) => return Ok(not_found("user not found")),
@@ -81,6 +137,7 @@ pub async fn update_me(
         user_id,
         phone: profile.phone,
         display_name: profile.display_name,
+        username: profile.username,
         has_avatar: profile.avatar_key.is_some(),
         is_online: profile.is_online,
     }))
@@ -219,5 +276,52 @@ pub async fn lookup_user(
     match found {
         Some((user_id, phone)) => Ok(HttpResponse::Ok().json(LookupResponse { user_id, phone })),
         None => Ok(not_found("user not found")),
+    }
+}
+
+/// Query `GET /api/users?q=...`.
+#[derive(Debug, serde::Deserialize)]
+pub struct SearchUsersQuery {
+    pub q: Option<String>,
+}
+
+/// Поиск людей по `@username` или отображаемому имени: `GET /api/users?q=`.
+///
+/// Возвращает только публичные поля (id, username, имя, аватар, статус).
+/// Телефон не отдаётся, чтобы поиск не превращался в перебор номеров.
+pub async fn search_users(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    query: web::Query<SearchUsersQuery>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let needle = query.q.as_deref().unwrap_or("").trim();
+    if needle.is_empty() {
+        return Ok(bad_request("query is empty"));
+    }
+    if needle.chars().count() > MAX_SEARCH_QUERY_CHARS {
+        return Ok(bad_request("query is too long (max 128 characters)"));
+    }
+
+    match db.search_users(needle, 20, user_id) {
+        Ok(rows) => Ok(HttpResponse::Ok().json(
+            rows.into_iter()
+                .map(|row| UserSearchItem {
+                    user_id: row.id,
+                    username: row.username,
+                    display_name: row.display_name,
+                    has_avatar: row.avatar_key.is_some(),
+                    is_online: row.is_online,
+                })
+                .collect::<Vec<_>>(),
+        )),
+        Err(e) => Ok(server_error("failed to search users", e)),
     }
 }

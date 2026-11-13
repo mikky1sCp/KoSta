@@ -110,9 +110,32 @@ pub struct MeResponse {
     pub phone: String,
     /// Отображаемое имя (None — показываем телефон).
     pub display_name: Option<String>,
+    /// Публичный `@username` (None — не задан).
+    pub username: Option<String>,
     /// Загружен ли аватар (картинка — `GET /api/avatars/{user_id}`).
     pub has_avatar: bool,
     pub is_online: bool,
+}
+
+/// Человек в результатах `GET /api/users?q=`.
+///
+/// Телефон намеренно не отдаётся: по username можно найти собеседника,
+/// но не узнать его номер.
+#[derive(Debug, Serialize)]
+pub struct UserSearchItem {
+    pub user_id: i64,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub has_avatar: bool,
+    pub is_online: bool,
+}
+
+/// Сообщение из глобального поиска (`GET /api/search?q=`) с привязкой к чату.
+#[derive(Debug, Serialize)]
+pub struct GlobalSearchHitItem {
+    pub chat_id: i64,
+    pub chat_title: String,
+    pub message: MessageItem,
 }
 
 /// Ответ `GET /api/users/lookup`.
@@ -131,12 +154,16 @@ pub struct GetHistoryQuery {
 
 /// Тело `POST /api/chats/private`.
 ///
-/// Поля с `default` нужны не для «пустого запроса», а чтобы отсутствие поля
-/// давало наш JSON-400 из валидации, а не текстовую ошибку экстрактора actix.
+/// Достаточно `phone` или `username`: по username можно начать чат с
+/// человеком, найденным через поиск людей. Поля с `default` нужны не для
+/// «пустого запроса», а чтобы отсутствие поля давало наш JSON-400 из
+/// валидации, а не текстовую ошибку экстрактора actix.
 #[derive(Debug, Deserialize)]
 pub struct CreatePrivateChatRequest {
     #[serde(default)]
     pub phone: String,
+    #[serde(default)]
+    pub username: String,
 }
 
 /// Тело `POST /api/chats/group`. Пустой `phones` — валидный случай:
@@ -307,6 +334,7 @@ mod tests {
             user_id: 7,
             phone: "+79990000000".to_string(),
             display_name: Some("Аня".to_string()),
+            username: Some("anya".to_string()),
             has_avatar: true,
             is_online: false,
         })
@@ -314,6 +342,7 @@ mod tests {
         assert_eq!(me["user_id"], 7);
         assert_eq!(me["is_online"], false);
         assert_eq!(me["display_name"], "Аня");
+        assert_eq!(me["username"], "anya");
         assert_eq!(me["has_avatar"], true);
 
         let lookup = serde_json::to_value(LookupResponse {

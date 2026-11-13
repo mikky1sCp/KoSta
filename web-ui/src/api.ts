@@ -1,11 +1,13 @@
 import type {
   ChatDetails,
   ChatItem,
+  GlobalSearchHit,
   LoginResponse,
   Me,
   Message,
   ReactionItem,
   UserLookup,
+  UserSearchItem,
 } from './types';
 import { parseMessagePayload } from './utils/message';
 
@@ -295,11 +297,18 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       return request<Me>('/me');
     },
 
-    /** Правка профиля: отображаемое имя (пустая строка — сбросить). */
-    updateProfile(displayName: string): Promise<Me> {
+    /**
+     * Правка профиля: отображаемое имя (пустая строка — сбросить) и
+     * необязательный username (`null` — снять, `undefined` — не трогать).
+     */
+    updateProfile(displayName: string, username?: string | null): Promise<Me> {
+      const body: Record<string, unknown> = { display_name: displayName };
+      if (username !== undefined) {
+        body.username = username === null ? '' : username;
+      }
       return request<Me>('/me', {
         method: 'PATCH',
-        body: JSON.stringify({ display_name: displayName }),
+        body: JSON.stringify(body),
       });
     },
 
@@ -349,6 +358,19 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       );
     },
 
+    /** Глобальный поиск по сообщениям во всех диалогах пользователя. */
+    searchGlobal(query: string, limit = 20): Promise<GlobalSearchHit[]> {
+      return request<GlobalSearchHit[]>(
+        `/search?q=${encodeURIComponent(query)}` +
+          `&limit=${encodeURIComponent(String(limit))}`,
+      );
+    },
+
+    /** Поиск людей по @username или имени. Телефоны не возвращаются. */
+    searchUsers(query: string): Promise<UserSearchItem[]> {
+      return request<UserSearchItem[]>(`/users?q=${encodeURIComponent(query)}`);
+    },
+
     chatDetails(chatId: number): Promise<ChatDetails> {
       return request<ChatDetails>(`/chats/${encodeURIComponent(String(chatId))}`);
     },
@@ -396,10 +418,18 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       );
     },
 
-    createPrivate(phone: string): Promise<ChatDetails> {
+    /**
+     * Личный чат по телефону или `@username`. Достаточно одного из двух:
+     * `createPrivate('+7999…')` или `createPrivate('', 'anya')`.
+     */
+    createPrivate(phone: string, username?: string): Promise<ChatDetails> {
+      const body: Record<string, string> = { phone };
+      if (username !== undefined) {
+        body.username = username;
+      }
       return request<ChatDetails>('/chats/private', {
         method: 'POST',
-        body: JSON.stringify({ phone }),
+        body: JSON.stringify(body),
       });
     },
 

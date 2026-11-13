@@ -20,8 +20,8 @@ mod users;
 mod tests;
 
 pub use rows::{
-    ChatRow, DialogMeta, HistoryRow, MediaMessageRow, MessageMeta, MtprotoSessionRow,
-    ParticipantRow, ReactionRow, UserProfileRow,
+    ChatRow, DialogMeta, GlobalSearchHit, HistoryRow, MediaMessageRow, MessageMeta,
+    MtprotoSessionRow, ParticipantRow, ReactionRow, UserProfileRow, UserSearchRow,
 };
 
 pub struct Database {
@@ -66,6 +66,27 @@ fn backfill_text_lower(conn: &rusqlite::Connection) -> Result<()> {
     let mut update = conn.prepare("UPDATE messages SET text_lower = ?1 WHERE id = ?2")?;
     for (id, text) in rows {
         update.execute(rusqlite::params![text.to_lowercase(), id])?;
+    }
+    Ok(())
+}
+
+/// Заполняет `display_name_lower` у пользователей, созданных до появления
+/// колонки. SQLite `lower()` не умеет кириллицу, поэтому нормализуем в Rust.
+fn backfill_display_name_lower(conn: &rusqlite::Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, display_name FROM users WHERE display_name IS NOT NULL
+         AND display_name_lower IS NULL",
+    )?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut update = conn.prepare("UPDATE users SET display_name_lower = ?1 WHERE id = ?2")?;
+    for (id, name) in rows {
+        update.execute(rusqlite::params![name.to_lowercase(), id])?;
     }
     Ok(())
 }
@@ -209,6 +230,16 @@ impl Database {
         // users: отображаемое имя и ключ аватара в media-хранилище.
         ensure_column(&conn, "users", "display_name", "TEXT")?;
         ensure_column(&conn, "users", "avatar_key", "TEXT")?;
+        // Публичный @username и нормализованное имя для поиска людей.
+        // Уникальный индекс допускает много NULL (SQLite), поэтому username
+        // необязателен, а дубликаты ловятся на уровне БД.
+        ensure_column(&conn, "users", "username", "TEXT")?;
+        ensure_column(&conn, "users", "display_name_lower", "TEXT")?;
+        backfill_display_name_lower(&conn)?;
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+            [],
+        )?;
         // dialogs: закреплённое сообщение (одно на диалог).
         ensure_column(&conn, "dialogs", "pinned_message_id", "INTEGER")?;
 

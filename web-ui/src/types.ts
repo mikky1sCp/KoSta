@@ -13,9 +13,27 @@ export interface Me {
   phone: string;
   /** Отображаемое имя; null — показываем телефон. */
   display_name: string | null;
+  /** Публичный @username; null — не задан. */
+  username: string | null;
   /** Загружен ли аватар (`GET /api/avatars/{user_id}`). */
   has_avatar: boolean;
   is_online: boolean;
+}
+
+/** Человек в результатах `GET /api/users?q=`. Телефон намеренно не отдаётся. */
+export interface UserSearchItem {
+  user_id: number;
+  username: string | null;
+  display_name: string | null;
+  has_avatar: boolean;
+  is_online: boolean;
+}
+
+/** Сообщение из глобального поиска с привязкой к чату. */
+export interface GlobalSearchHit {
+  chat_id: number;
+  chat_title: string;
+  message: Message;
 }
 
 export interface ChatItem {

@@ -7,6 +7,7 @@ import type {
   Me,
   Message,
   UiMessage,
+  UserSearchItem,
   WsStatus,
 } from './types';
 import { getErrorMessage } from './utils/errors';
@@ -26,6 +27,7 @@ import { NewChatModal } from './components/modals/NewChatModal';
 import { NewGroupModal } from './components/modals/NewGroupModal';
 import { ChatInfoModal } from './components/modals/ChatInfoModal';
 import { ProfileModal } from './components/modals/ProfileModal';
+import { SearchPalette } from './components/SearchPalette';
 
 const PAGE_SIZE = 50;
 const TYPING_TIMEOUT_MS = 3_000;
@@ -188,6 +190,10 @@ export function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   const [modal, setModal] = useState<ModalKind | null>(null);
+  /** Палитра глобального поиска (Ctrl+K). */
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  /** Сообщение, к которому нужно прокрутить ленту после перехода из поиска. */
+  const [scrollToMessageId, setScrollToMessageId] = useState<number | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [unreadDividerMessageId, setUnreadDividerMessageId] = useState<
     number | null
@@ -429,6 +435,7 @@ export function App() {
           user_id: response.user_id,
           phone,
           display_name: null,
+          username: null,
           has_avatar: false,
           is_online: true,
         });
@@ -1013,11 +1020,49 @@ export function App() {
   );
 
   const handleSelectChat = useCallback((chatId: number) => {
+    setScrollToMessageId(null);
     setActiveChatId(chatId);
   }, []);
 
   const handleBack = useCallback(() => {
+    setScrollToMessageId(null);
     setActiveChatId(null);
+  }, []);
+
+  /** Переход к чату из палитры поиска. */
+  const handleOpenChat = useCallback((chatId: number) => {
+    setPaletteOpen(false);
+    setScrollToMessageId(null);
+    setActiveChatId(chatId);
+  }, []);
+
+  /** Переход к конкретному сообщению из глобального поиска. */
+  const handleOpenMessage = useCallback((chatId: number, messageId: number) => {
+    setPaletteOpen(false);
+    setActiveChatId(chatId);
+    setScrollToMessageId(messageId);
+  }, []);
+
+  /** Начать личный чат с человеком, найденным через поиск людей. */
+  const handleStartChat = useCallback(
+    async (user: UserSearchItem) => {
+      setPaletteOpen(false);
+      if (!user.username) {
+        toast.error('У пользователя нет username');
+        return;
+      }
+      try {
+        const next = await api.createPrivate('', user.username);
+        handleChatCreated(next);
+      } catch (error) {
+        toast.error(getErrorMessage(error));
+      }
+    },
+    [api, handleChatCreated, toast],
+  );
+
+  const handleScrollToMessageDone = useCallback(() => {
+    setScrollToMessageId(null);
   }, []);
 
   // ---------- синхронизация refs и обработчиков ----------
@@ -1149,7 +1194,7 @@ export function App() {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (modal !== null || lightbox !== null) {
+      if (modal !== null || lightbox !== null || paletteOpen) {
         return;
       }
       const target = event.target as HTMLElement | null;
@@ -1160,14 +1205,13 @@ export function App() {
           target.isContentEditable);
       const key = event.key.toLowerCase();
 
-      // Ctrl/Cmd+K — фокус на поиск чатов (как в Telegram/Notion).
+      // Ctrl/Cmd+K — палитра глобального поиска (как в Telegram/Notion).
       if ((event.ctrlKey || event.metaKey) && key === 'k') {
         event.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        setPaletteOpen(true);
         return;
       }
-      // «/» вне поля ввода — тоже фокус поиска.
+      // «/» вне поля ввода — фокус на поиск чатов в сайдбаре.
       if (key === '/' && !isTyping && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
         searchInputRef.current?.focus();
@@ -1176,7 +1220,7 @@ export function App() {
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [modal, lightbox]);
+  }, [modal, lightbox, paletteOpen]);
 
   // ---------- история активного чата ----------
 
@@ -1388,6 +1432,8 @@ export function App() {
           pinnedMessage={pinnedMessage}
           canPin={activeChat?.is_group ? (details?.is_admin ?? false) : true}
           onTogglePin={handleTogglePin}
+          scrollToMessageId={scrollToMessageId}
+          onScrollToMessageDone={handleScrollToMessageDone}
           initialDraft={activeChatId !== null ? drafts.get(activeChatId) : ''}
           onDraftChange={(chatId, text) => drafts.set(chatId, text)}
           className={activeChatId !== null ? 'flex' : 'hidden md:flex'}
@@ -1467,6 +1513,16 @@ export function App() {
           }}
           onLogout={handleLogout}
           onClose={() => setModal(null)}
+        />
+      )}
+      {paletteOpen && (
+        <SearchPalette
+          api={api}
+          chats={chats}
+          onClose={() => setPaletteOpen(false)}
+          onOpenChat={handleOpenChat}
+          onOpenMessage={handleOpenMessage}
+          onStartChat={(user) => void handleStartChat(user)}
         />
       )}
     </>

@@ -550,3 +550,94 @@ fn deleted_media_message_disappears_from_history_and_download() {
     assert!(t.db.get_history(dialog_id, 0, 10).unwrap().is_empty());
     assert!(t.db.get_media_message(message_id).unwrap().is_none());
 }
+
+#[test]
+fn username_roundtrip_is_unique_and_case_insensitive() {
+    let t = TempDb::new();
+    let u1 = t.db.create_user("+2300", "pass").unwrap();
+    let u2 = t.db.create_user("+2301", "pass").unwrap();
+
+    t.db.update_username(u1, "@Anya").unwrap();
+    assert_eq!(t.db.find_user_by_username("anya").unwrap(), Some(u1));
+    assert_eq!(t.db.find_user_by_username("@ANYA").unwrap(), Some(u1));
+
+    // Второй пользователь не может занять тот же username (регистр не важен).
+    assert!(t.db.update_username(u2, "anya").is_err());
+    t.db.update_username(u2, "boris").unwrap();
+    assert_eq!(t.db.find_user_by_username("boris").unwrap(), Some(u2));
+
+    // Пустая строка снимает username.
+    t.db.update_username(u2, "").unwrap();
+    assert_eq!(t.db.find_user_by_username("boris").unwrap(), None);
+}
+
+#[test]
+fn search_users_finds_by_username_and_cyrillic_display_name() {
+    let t = TempDb::new();
+    let u1 = t.db.create_user("+2302", "pass").unwrap();
+    let u2 = t.db.create_user("+2303", "pass").unwrap();
+    let u3 = t.db.create_user("+2304", "pass").unwrap();
+
+    t.db.update_username(u1, "anya").unwrap();
+    t.db.update_username(u2, "boris").unwrap();
+    t.db.update_display_name(u3, "Анна").unwrap();
+
+    let by_username = t.db.search_users("any", 10, u2).unwrap();
+    assert_eq!(by_username.len(), 1);
+    assert_eq!(by_username[0].id, u1);
+    assert_eq!(by_username[0].username.as_deref(), Some("anya"));
+    assert!(by_username[0].display_name.is_none());
+
+    let by_name = t.db.search_users("анн", 10, u1).unwrap();
+    assert_eq!(by_name.len(), 1);
+    assert_eq!(by_name[0].id, u3);
+    assert_eq!(by_name[0].display_name.as_deref(), Some("Анна"));
+
+    // Себя и системного пользователя (id 0) в результатах нет.
+    let all = t.db.search_users("a", 10, u1).unwrap();
+    assert!(all.iter().all(|row| row.id != u1 && row.id != 0));
+
+    // Спецсимволы LIKE экранируются: "%" не должен матчить всё подряд.
+    assert!(t.db.search_users("%", 10, u1).unwrap().is_empty());
+}
+
+#[test]
+fn global_search_finds_messages_across_user_dialogs() {
+    let t = TempDb::new();
+    let u1 = t.db.create_user("+2305", "pass").unwrap();
+    let u2 = t.db.create_user("+2306", "pass").unwrap();
+    let u3 = t.db.create_user("+2307", "pass").unwrap();
+    let d1 = t.db.create_private_dialog(u1, u2).unwrap();
+    let d2 = t.db.create_private_dialog(u1, u3).unwrap();
+
+    t.db.save_message(d1, u2, "привет мир", 1, false, None, None)
+        .unwrap();
+    t.db.save_message(d2, u3, "привет снова", 2, false, None, None)
+        .unwrap();
+    t.db.save_message(d1, u1, "другое", 3, true, None, None)
+        .unwrap();
+
+    let hits = t.db.search_messages_global(u1, "привет", 10).unwrap();
+    assert_eq!(
+        hits.len(),
+        2,
+        "оба диалога должны попасть в глобальный поиск"
+    );
+    assert_eq!(hits[0].dialog_id, d2);
+    assert_eq!(
+        hits[0].title, "+2307",
+        "заголовок личного чата — телефон собеседника"
+    );
+    assert_eq!(hits[1].dialog_id, d1);
+    assert_eq!(hits[1].title, "+2306");
+
+    // Пользователь вне диалога не видит его сообщений.
+    let hits_u2 = t.db.search_messages_global(u2, "привет", 10).unwrap();
+    assert_eq!(hits_u2.len(), 1);
+    assert_eq!(hits_u2[0].dialog_id, d1);
+
+    // Удалённые сообщения в поиск не попадают.
+    t.db.delete_message(hits[0].row.id, u3).unwrap();
+    let hits = t.db.search_messages_global(u1, "привет", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+}

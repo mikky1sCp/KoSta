@@ -91,18 +91,30 @@ pub async fn create_private_chat(
         Err(resp) => return Ok(resp),
     };
 
-    let phone = json.phone.as_str();
-    if !valid_phone(phone) {
-        return Ok(bad_request("Некорректный номер телефона"));
-    }
+    let phone = json.phone.trim();
+    let username = json.username.trim();
 
-    let target = match db.find_user_by_phone(phone) {
-        Ok(target) => target,
-        Err(e) => return Ok(server_error("failed to lookup user", e)),
+    // Достаточно телефона или username: второй способ нужен, когда человек
+    // найден через поиск людей и его номер не показывается.
+    let target_id = if !phone.is_empty() {
+        if !valid_phone(phone) {
+            return Ok(bad_request("Некорректный номер телефона"));
+        }
+        match db.find_user_by_phone(phone) {
+            Ok(Some((target_id, _))) => target_id,
+            Ok(None) => return Ok(not_found("user not found")),
+            Err(e) => return Ok(server_error("failed to lookup user", e)),
+        }
+    } else if !username.is_empty() {
+        match db.find_user_by_username(username) {
+            Ok(Some(target_id)) => target_id,
+            Ok(None) => return Ok(not_found("user not found")),
+            Err(e) => return Ok(server_error("failed to lookup user", e)),
+        }
+    } else {
+        return Ok(bad_request("Укажите phone или username"));
     };
-    let Some((target_id, _)) = target else {
-        return Ok(not_found("user not found"));
-    };
+
     if target_id == user_id {
         return Ok(bad_request("Нельзя создать диалог с самим собой"));
     }
