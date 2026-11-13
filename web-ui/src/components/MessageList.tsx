@@ -42,6 +42,11 @@ interface MessageListProps {
   onEditMessage: (message: UiMessage) => void;
   onDeleteMessage: (message: UiMessage) => void;
   onToggleReaction: (message: UiMessage, emoji: string) => void;
+  /** id закреплённого сообщения диалога (или null). */
+  pinnedMessageId: number | null;
+  /** Может ли пользователь закреплять сообщения. */
+  canPin: boolean;
+  onTogglePin: (message: UiMessage) => void;
 }
 
 function MessagesSkeleton() {
@@ -84,6 +89,9 @@ export function MessageList({
   onEditMessage,
   onDeleteMessage,
   onToggleReaction,
+  pinnedMessageId,
+  canPin,
+  onTogglePin,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -291,6 +299,9 @@ export function MessageList({
         onEditMessage={onEditMessage}
         onDeleteMessage={onDeleteMessage}
         onToggleReaction={onToggleReaction}
+        isPinned={pinnedMessageId === message.id}
+        canPin={canPin}
+        onTogglePin={onTogglePin}
       />,
     );
 

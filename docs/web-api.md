@@ -209,9 +209,25 @@ Chat details (used by the chat header and the "group info" modal):
     {"user_id": 7, "phone": "+79990000000", "is_admin": false, "is_online": true},
     {"user_id": 8, "phone": "+79990000001", "is_admin": false, "is_online": false}
   ],
-  "is_admin": false
+  "is_admin": false,
+  "pinned_message": null
 }
 ```
+
+`pinned_message` is the currently pinned `MessageItem` of the dialog (same shape as in
+`/api/history`), or `null` when nothing is pinned or the pinned message was deleted.
+
+### POST /api/chats/{id}/pin
+
+Pin a message or clear the pin. Body: `{"message_id": 105}`, or
+`{"message_id": null}` to unpin.
+
+- Any participant may pin in a private chat; in a group only an admin may (`403`).
+- The message must belong to this dialog and not be deleted (`404` otherwise).
+- `200` — `{"ok": true, "pinned_message": MessageItem | null}`; subscribers receive a
+  `dialog_pinned` event with the same object.
+- Deleting a pinned message automatically clears the pin and broadcasts
+  `dialog_pinned {"message": null}`.
 
 `is_admin` is the current user's role. Available to participants only (`403`).
 
@@ -341,6 +357,8 @@ Server → client:
 - `message_reactions {"dialog_id", "message_id", "reactions": [{"emoji", "count"}]}` —
   reactions on a message changed; `me` is intentionally absent, each client keeps
   its own flag
+- `dialog_pinned {"dialog_id", "message": MessageItem | null}` — the pinned message
+  changed; `null` means the pin was cleared
 - `error {"error"}`
 
 Limits: auth — 10 attempts/minute per IP, frames — 60/s per IP, messages — 10/s per

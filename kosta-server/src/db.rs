@@ -364,6 +364,8 @@ impl Database {
         // users: отображаемое имя и ключ аватара в media-хранилище.
         ensure_column(&conn, "users", "display_name", "TEXT")?;
         ensure_column(&conn, "users", "avatar_key", "TEXT")?;
+        // dialogs: закреплённое сообщение (одно на диалог).
+        ensure_column(&conn, "dialogs", "pinned_message_id", "INTEGER")?;
 
         // Для старых групп админа нет: назначаем администратором первого
         // вступившего (создателя), иначе группу нельзя будет модерировать.
@@ -1062,6 +1064,66 @@ impl Database {
             )
             .optional()?;
         Ok(dialog_id)
+    }
+
+    // ===== ЗАКРЕПЛЁННОЕ СООБЩЕНИЕ =====
+
+    /// Ставит (`Some`) или снимает (`None`) закреплённое сообщение диалога.
+    pub fn set_pinned_message(&self, dialog_id: i64, message_id: Option<i64>) -> Result<()> {
+        let conn = self.get_conn()?;
+        let updated = conn.execute(
+            "UPDATE dialogs SET pinned_message_id = ?1 WHERE id = ?2",
+            rusqlite::params![message_id, dialog_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("диалог {} не найден", dialog_id));
+        }
+        Ok(())
+    }
+
+    /// id закреплённого сообщения диалога.
+    pub fn get_pinned_message_id(&self, dialog_id: i64) -> Result<Option<i64>> {
+        let conn = self.get_conn()?;
+        let pinned: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT pinned_message_id FROM dialogs WHERE id = ?1",
+                rusqlite::params![dialog_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(pinned.flatten())
+    }
+
+    /// Снимает закрепление, если закреплено именно это сообщение.
+    pub fn clear_pinned_if_matches(&self, dialog_id: i64, message_id: i64) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE dialogs SET pinned_message_id = NULL
+             WHERE id = ?1 AND pinned_message_id = ?2",
+            rusqlite::params![dialog_id, message_id],
+        )?;
+        Ok(())
+    }
+
+    /// Одно сообщение по id (для закрепления и рассылки).
+    pub fn get_message_row(&self, message_id: i64) -> Result<Option<HistoryRow>> {
+        let conn = self.get_conn()?;
+        let found = conn
+            .query_row(
+                "SELECT m.id, m.sender_id, m.text, m.timestamp, m.is_outgoing, m.read_status,
+                        m.delivered_status, m.media_path, m.media_type, m.media_size, m.media_name,
+                        m.reply_to_id, m.edited_at,
+                        CASE WHEN r.deleted = 1 THEN NULL ELSE r.text END,
+                        CASE WHEN r.deleted = 1 THEN NULL ELSE r.sender_id END,
+                        r.media_path
+                 FROM messages m
+                 LEFT JOIN messages r ON r.id = m.reply_to_id
+                 WHERE m.id = ?1 AND m.deleted = 0",
+                rusqlite::params![message_id],
+                history_row_from_row,
+            )
+            .optional()?;
+        Ok(found)
     }
 
     // ===== СООБЩЕНИЯ (ОБНОВЛЁННЫЕ) =====

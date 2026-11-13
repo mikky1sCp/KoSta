@@ -90,6 +90,10 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                             web::resource("/chats/{id}/read")
                                 .route(web::post().to(handlers::mark_chat_read)),
                         )
+                        .service(
+                            web::resource("/chats/{id}/pin")
+                                .route(web::post().to(handlers::pin_message)),
+                        )
                         // Загрузка файла в диалог: два сегмента после /chats,
                         // поэтому с "/chats/{id}" не конфликтует.
                         .service(

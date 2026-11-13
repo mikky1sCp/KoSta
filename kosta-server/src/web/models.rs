@@ -59,6 +59,8 @@ pub struct ChatDetails {
     pub chat: ChatItem,
     pub participants: Vec<ParticipantItem>,
     pub is_admin: bool,
+    /// Закреплённое сообщение диалога (если есть).
+    pub pinned_message: Option<MessageItem>,
 }
 
 /// Элемент истории и ответа на загрузку медиа.
@@ -265,6 +267,7 @@ mod tests {
                 },
             ],
             is_admin: true,
+            pinned_message: None,
         };
         let value = serde_json::to_value(details).unwrap();
         assert_eq!(value["is_admin"], true);

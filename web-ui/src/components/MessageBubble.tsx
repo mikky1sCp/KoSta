@@ -6,6 +6,7 @@ import {
   Copy,
   MoreHorizontal,
   Pencil,
+  Pin,
   Reply,
   Trash2,
 } from 'lucide-react';
@@ -56,6 +57,11 @@ interface MessageBubbleProps {
   onEditMessage: (message: UiMessage) => void;
   onDeleteMessage: (message: UiMessage) => void;
   onToggleReaction: (message: UiMessage, emoji: string) => void;
+  /** Это сообщение сейчас закреплено. */
+  isPinned: boolean;
+  /** Может ли пользователь закреплять сообщения. */
+  canPin: boolean;
+  onTogglePin: (message: UiMessage) => void;
 }
 
 export function MessageBubble({
@@ -75,6 +81,9 @@ export function MessageBubble({
   onEditMessage,
   onDeleteMessage,
   onToggleReaction,
+  isPinned,
+  canPin,
+  onTogglePin,
 }: MessageBubbleProps) {
   const hasMedia = message.is_media === true;
   const hasImage = hasMedia && isImageMimeType(message.media_type);
@@ -212,6 +221,17 @@ export function MessageBubble({
                   >
                     <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                     Редактировать
+                  </button>
+                )}
+                {canPin && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runAction(onTogglePin)}
+                    className={menuItemClass}
+                  >
+                    <Pin className="h-3.5 w-3.5" aria-hidden="true" />
+                    {isPinned ? 'Открепить' : 'Закрепить'}
                   </button>
                 )}
                 {canDelete && (

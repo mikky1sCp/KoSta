@@ -23,6 +23,10 @@ export type WsEvent =
         reactions: { emoji: string; count: number }[];
       };
     }
+  | {
+      type: 'dialog_pinned';
+      payload: { dialog_id: number; message: (Message & { dialog_id?: number }) | null };
+    }
   | { type: 'error'; payload: { error: string } };
 
 export interface WsHandlers {
@@ -320,6 +324,18 @@ export class WsClient {
             dialog_id: asNumber(payload.dialog_id),
             message_id: asNumber(payload.message_id),
             reactions,
+          },
+        });
+        break;
+      }
+      case 'dialog_pinned': {
+        const raw = isRecord(payload.message) ? payload.message : null;
+        const message = raw ? parseMessagePayload(raw) : null;
+        this.handlers.onEvent({
+          type: 'dialog_pinned',
+          payload: {
+            dialog_id: asNumber(payload.dialog_id),
+            message,
           },
         });
         break;

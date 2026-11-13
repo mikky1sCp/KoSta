@@ -407,6 +407,80 @@ const badAudio = await fetch(
 );
 check('голосовое: неподдерживаемый аудио-тип -> 415', badAudio.status === 415, `status ${badAudio.status}`);
 
+// ---------- 7. Закреплённые сообщения ----------
+const pin = (token, chatId, messageId) =>
+  req(`/api/chats/${chatId}/pin`, {
+    method: 'POST',
+    token,
+    body: { message_id: messageId },
+  });
+
+const pinRes = await pin(tokenA, dialogId, helloId);
+check(
+  'закреп: сообщение закреплено',
+  pinRes.status === 200 && pinRes.body?.pinned_message?.id === helloId,
+  JSON.stringify(pinRes.body?.pinned_message?.id),
+);
+
+const pinEvent = await wsB
+  .next((m) => m.type === 'dialog_pinned' && m.payload?.dialog_id === dialogId, 4000)
+  .catch(() => null);
+check(
+  'закреп: подписчик получил dialog_pinned',
+  pinEvent?.payload?.message?.id === helloId,
+  JSON.stringify(pinEvent?.payload?.message?.id),
+);
+
+const detailsWithPin = await req(`/api/chats/${dialogId}`, { token: tokenB });
+check(
+  'закреп: детали чата отдают закреплённое сообщение',
+  detailsWithPin.body?.pinned_message?.id === helloId,
+  JSON.stringify(detailsWithPin.body?.pinned_message?.id),
+);
+
+const unpinRes = await pin(tokenA, dialogId, null);
+check('закреп: снятие закрепления', unpinRes.status === 200 && unpinRes.body?.pinned_message === null, JSON.stringify(unpinRes.body));
+
+// Сообщение из другого диалога закрепить нельзя.
+const foreignPin = await pin(tokenA, foreignDialogId, helloId);
+check('закреп: чужое сообщение -> 404', foreignPin.status === 404, `status ${foreignPin.status}`);
+
+// В группе закреплять может только администратор.
+const group = await req('/api/chats/group', {
+  method: 'POST',
+  token: tokenA,
+  body: { title: `pin group ${stamp}`, phones: [phoneB] },
+});
+const groupId = group.body?.chat?.id;
+wsA.send({ action: 'subscribe', payload: { dialog_id: groupId } });
+await wsA.next((m) => m.type === 'subscribed');
+const groupText = `group msg ${stamp}`;
+wsA.send({ action: 'send_message', payload: { dialog_id: groupId, text: groupText } });
+const groupMsg = await wsA.next(
+  (m) => m.type === 'new_message' && m.payload?.text === groupText,
+);
+const groupMsgId = groupMsg.payload.id;
+
+const memberPin = await pin(tokenB, groupId, groupMsgId);
+check('закреп: не админ в группе -> 403', memberPin.status === 403, `status ${memberPin.status}`);
+
+const adminPin = await pin(tokenA, groupId, groupMsgId);
+check(
+  'закреп: админ группы может закрепить',
+  adminPin.status === 200 && adminPin.body?.pinned_message?.id === groupMsgId,
+  `status ${adminPin.status}`,
+);
+
+// Удаление закреплённого сообщения снимает закрепление.
+await pin(tokenA, dialogId, helloId);
+const delPinned = await req(`/api/messages/${helloId}`, { method: 'DELETE', token: tokenA });
+const afterDel = await req(`/api/chats/${dialogId}`, { token: tokenA });
+check(
+  'закреп: удаление сообщения снимает закрепление',
+  delPinned.status === 200 && afterDel.body?.pinned_message === null,
+  JSON.stringify(afterDel.body?.pinned_message),
+);
+
 wsA.close();
 wsB.close();
 wsC.close();

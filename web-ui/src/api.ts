@@ -368,6 +368,20 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       });
     },
 
+    /** Закрепляет сообщение (или снимает закрепление при `null`). */
+    pinMessage(
+      chatId: number,
+      messageId: number | null,
+    ): Promise<{ ok: boolean; pinned_message: Message | null }> {
+      return request<{ ok: boolean; pinned_message: Message | null }>(
+        `/chats/${encodeURIComponent(String(chatId))}/pin`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ message_id: messageId }),
+        },
+      );
+    },
+
     /** Переключает реакцию: повторный вызов с тем же эмодзи снимает её. */
     toggleReaction(
       messageId: number,

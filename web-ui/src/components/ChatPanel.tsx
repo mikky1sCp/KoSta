@@ -5,6 +5,7 @@ import type { ChatDetails, ChatItem, UiMessage, WsStatus } from '../types';
 import { ChatHeader } from './ChatHeader';
 import { Composer } from './Composer';
 import { MessageList } from './MessageList';
+import { PinnedBar } from './PinnedBar';
 import { cn } from '../utils/classNames';
 
 interface ChatPanelProps {
@@ -45,6 +46,11 @@ interface ChatPanelProps {
   onEditMessage: (message: UiMessage) => void;
   onDeleteMessage: (message: UiMessage) => void;
   onToggleReaction: (message: UiMessage, emoji: string) => void;
+  /** Закреплённое сообщение диалога. */
+  pinnedMessage: UiMessage | null;
+  /** Может ли текущий пользователь закреплять (в группе — только админ). */
+  canPin: boolean;
+  onTogglePin: (message: UiMessage) => void;
   initialDraft: string;
   onDraftChange: (chatId: number, text: string) => void;
   className?: string;
@@ -110,6 +116,9 @@ function ChatView({
   onEditMessage,
   onDeleteMessage,
   onToggleReaction,
+  pinnedMessage,
+  canPin,
+  onTogglePin,
   initialDraft,
   onDraftChange,
 }: Omit<ChatPanelProps, 'className' | 'chat'> & { chat: ChatItem }) {
@@ -213,6 +222,15 @@ function ChatView({
         </div>
       )}
 
+      {pinnedMessage && (
+        <PinnedBar
+          message={pinnedMessage}
+          participants={details?.participants ?? []}
+          canUnpin={canPin}
+          onUnpin={() => onTogglePin(pinnedMessage)}
+        />
+      )}
+
       {wsStatus !== 'connected' && (
         <div className="flex items-center justify-center gap-2 border-b border-line bg-warn/5 px-4 py-1.5 text-[11px] text-warn">
           <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -267,6 +285,9 @@ function ChatView({
               onEditMessage={onEditMessage}
               onDeleteMessage={onDeleteMessage}
               onToggleReaction={onToggleReaction}
+              pinnedMessageId={pinnedMessage?.id ?? null}
+              canPin={canPin}
+              onTogglePin={onTogglePin}
             />
           )}
         </div>
@@ -291,6 +312,9 @@ function ChatView({
           onEditMessage={onEditMessage}
           onDeleteMessage={onDeleteMessage}
               onToggleReaction={onToggleReaction}
+              pinnedMessageId={pinnedMessage?.id ?? null}
+              canPin={canPin}
+              onTogglePin={onTogglePin}
         />
       )}
 

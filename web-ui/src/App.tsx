@@ -195,6 +195,8 @@ export function App() {
   // Ответ на сообщение и режим правки — взаимоисключающие режимы композера.
   const [replyTo, setReplyTo] = useState<UiMessage | null>(null);
   const [editing, setEditing] = useState<UiMessage | null>(null);
+  /** Закреплённое сообщение активного диалога. */
+  const [pinnedMessage, setPinnedMessage] = useState<UiMessage | null>(null);
 
   const sessionRef = useRef<Session | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
@@ -204,6 +206,7 @@ export function App() {
   const wsRef = useRef<WsClient | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const replyToRef = useRef<UiMessage | null>(null);
+  const pinnedMessageRef = useRef<UiMessage | null>(null);
   const typingTimersRef = useRef(new Map<number, number>());
   const typingStopTimerRef = useRef<number | null>(null);
   const typingSentRef = useRef(false);
@@ -724,6 +727,31 @@ export function App() {
     [api, refreshChats, toast],
   );
 
+  const handleTogglePin = useCallback(
+    (message: UiMessage) => {
+      const chatId = activeChatIdRef.current;
+      if (chatId === null || message.id <= 0) {
+        return;
+      }
+      const unpin = pinnedMessageRef.current?.id === message.id;
+      void api
+        .pinMessage(chatId, unpin ? null : message.id)
+        .then((response) => {
+          setPinnedMessage(
+            response.pinned_message
+              ? { ...response.pinned_message, pending: false }
+              : null,
+          );
+        })
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 401)) {
+            toast.error(getErrorMessage(error));
+          }
+        });
+    },
+    [api, toast],
+  );
+
   const handleOpenImage = useCallback((message: UiMessage, url: string) => {
     setLightbox({ message, url });
   }, []);
@@ -927,6 +955,15 @@ export function App() {
         break;
       }
 
+      case 'dialog_pinned': {
+        const { dialog_id, message } = event.payload;
+        if (dialog_id !== activeChatIdRef.current) {
+          break;
+        }
+        setPinnedMessage(message ? { ...message, pending: false } : null);
+        break;
+      }
+
       case 'error':
         toast.error(event.payload.error || 'Ошибка соединения');
         break;
@@ -999,6 +1036,7 @@ export function App() {
     // Ответ и правка относятся к сообщению конкретного чата.
     setReplyTo(null);
     setEditing(null);
+    setPinnedMessage(null);
   }, [activeChatId]);
 
   useEffect(() => {
@@ -1008,6 +1046,10 @@ export function App() {
   useEffect(() => {
     replyToRef.current = replyTo;
   }, [replyTo]);
+
+  useEffect(() => {
+    pinnedMessageRef.current = pinnedMessage;
+  }, [pinnedMessage]);
 
   useEffect(() => {
     chatsRef.current = chats;
@@ -1185,6 +1227,11 @@ export function App() {
         setMessages((current) => mergeHistory(history, current));
         setHasMore(history.length >= PAGE_SIZE);
         setDetails(chatDetails);
+        setPinnedMessage(
+          chatDetails.pinned_message
+            ? { ...chatDetails.pinned_message, pending: false }
+            : null,
+        );
         if (unreadAtOpen > 0 && merged.length > 0) {
           const skip = Math.min(unreadAtOpen, merged.length);
           setUnreadDividerMessageId(merged[merged.length - skip].id);
@@ -1338,6 +1385,9 @@ export function App() {
           onEditMessage={handleEditMessage}
           onDeleteMessage={handleDeleteMessage}
           onToggleReaction={handleToggleReaction}
+          pinnedMessage={pinnedMessage}
+          canPin={activeChat?.is_group ? (details?.is_admin ?? false) : true}
+          onTogglePin={handleTogglePin}
           initialDraft={activeChatId !== null ? drafts.get(activeChatId) : ''}
           onDraftChange={(chatId, text) => drafts.set(chatId, text)}
           className={activeChatId !== null ? 'flex' : 'hidden md:flex'}

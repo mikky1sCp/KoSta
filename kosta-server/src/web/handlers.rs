@@ -165,10 +165,18 @@ fn build_chat_details(
     };
     let participants = db.get_dialog_participants_detailed(dialog_id)?;
     let is_admin = db.is_dialog_admin(dialog_id, viewer_id)?;
+    // Закреплённое сообщение: удалённое или отсутствующее просто не показываем.
+    let pinned_message = match db.get_pinned_message_id(dialog_id)? {
+        Some(message_id) => db
+            .get_message_row(message_id)?
+            .map(|row| message_item_from_row(row, viewer_id)),
+        None => None,
+    };
     Ok(Some(ChatDetails {
         chat: chat_item(row),
         participants: participants.into_iter().map(participant_item).collect(),
         is_admin,
+        pinned_message,
     }))
 }
 
@@ -1340,6 +1348,21 @@ pub async fn edit_message(
     .to_string();
     state.broadcast_to_dialog(meta.dialog_id, &event, None);
 
+    // Если отредактировано закреплённое сообщение — обновим и плашку.
+    if matches!(db.get_pinned_message_id(meta.dialog_id), Ok(Some(id)) if id == message_id) {
+        if let Ok(Some(row)) = db.get_message_row(message_id) {
+            let pinned = json!({
+                "type": "dialog_pinned",
+                "payload": {
+                    "dialog_id": meta.dialog_id,
+                    "message": message_item_from_row(row, user_id),
+                }
+            })
+            .to_string();
+            state.broadcast_to_dialog(meta.dialog_id, &pinned, None);
+        }
+    }
+
     Ok(HttpResponse::Ok().json(json!({ "ok": true, "edited_at": edited_at })))
 }
 
@@ -1383,6 +1406,21 @@ pub async fn delete_message(
 
     if let Err(e) = db.delete_message(message_id, user_id) {
         return Ok(server_error("failed to delete message", e));
+    }
+
+    // Удалённое сообщение не должно остаться в закреплённых.
+    let was_pinned =
+        matches!(db.get_pinned_message_id(meta.dialog_id), Ok(Some(id)) if id == message_id);
+    if was_pinned {
+        if let Err(e) = db.clear_pinned_if_matches(meta.dialog_id, message_id) {
+            tracing::error!("failed to clear pinned message: {}", e);
+        }
+        let unpin_event = json!({
+            "type": "dialog_pinned",
+            "payload": { "dialog_id": meta.dialog_id, "message": serde_json::Value::Null }
+        })
+        .to_string();
+        state.broadcast_to_dialog(meta.dialog_id, &unpin_event, None);
     }
 
     let event = json!({
@@ -1493,6 +1531,91 @@ pub async fn toggle_reaction(
         .collect();
 
     Ok(HttpResponse::Ok().json(json!({ "ok": true, "reactions": response_reactions })))
+}
+
+/// Тело `POST /api/chats/{id}/pin`.
+#[derive(Debug, serde::Deserialize)]
+pub struct PinMessageBody {
+    /// `null` — снять закрепление.
+    #[serde(default)]
+    pub message_id: Option<i64>,
+}
+
+/// Закрепляет или открепляет сообщение: `POST /api/chats/{id}/pin`.
+///
+/// В группе закреплять может только администратор (как и остальные
+/// модерационные действия), в личном чате — любой участник.
+pub async fn pin_message(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+    body: web::Json<PinMessageBody>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let dialog_id = match path_id(&path, "id диалога") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+
+    let participants = match dialog_participants(&db, dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+    let is_group = matches!(db.get_dialog_type(dialog_id), Ok(Some(1)));
+    if is_group {
+        match db.is_dialog_admin(dialog_id, user_id) {
+            Ok(true) => {}
+            Ok(false) => return Ok(forbidden("only an admin can pin messages")),
+            Err(e) => return Ok(server_error("failed to check admin rights", e)),
+        }
+    }
+
+    let pinned_item = match body.message_id {
+        Some(message_id) => {
+            // Закрепить можно только живое сообщение этого же диалога.
+            match db.get_message_dialog_id(message_id) {
+                Ok(Some(owner)) if owner == dialog_id => {}
+                Ok(_) => return Ok(not_found("message not found in this dialog")),
+                Err(e) => return Ok(server_error("failed to load message", e)),
+            }
+            if let Err(e) = db.set_pinned_message(dialog_id, Some(message_id)) {
+                return Ok(server_error("failed to pin message", e));
+            }
+            match db.get_message_row(message_id) {
+                Ok(Some(row)) => Some(message_item_from_row(row, user_id)),
+                Ok(None) => return Ok(not_found("message not found")),
+                Err(e) => return Ok(server_error("failed to load message", e)),
+            }
+        }
+        None => {
+            if let Err(e) = db.set_pinned_message(dialog_id, None) {
+                return Ok(server_error("failed to unpin message", e));
+            }
+            None
+        }
+    };
+
+    let event = json!({
+        "type": "dialog_pinned",
+        "payload": {
+            "dialog_id": dialog_id,
+            "message": pinned_item,
+        }
+    })
+    .to_string();
+    state.broadcast_to_dialog(dialog_id, &event, None);
+
+    Ok(HttpResponse::Ok().json(json!({ "ok": true, "pinned_message": pinned_item })))
 }
 
 #[cfg(test)]

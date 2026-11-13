@@ -86,6 +86,8 @@ export interface ChatDetails {
   chat: ChatItem;
   participants: Participant[];
   is_admin: boolean;
+  /** Закреплённое сообщение диалога. */
+  pinned_message: Message | null;
 }
 
 export interface UserLookup {
