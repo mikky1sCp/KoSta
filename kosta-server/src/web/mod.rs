@@ -43,7 +43,23 @@ pub fn run_web_server(
                 .wrap(
                     DefaultHeaders::new()
                         .add(("X-Content-Type-Options", "nosniff"))
-                        .add(("Referrer-Policy", "no-referrer")),
+                        .add(("Referrer-Policy", "no-referrer"))
+                        // CSP рассчитан на собранную Vite-версию: скрипты и CSS
+                        // с этого же origin, внешних ресурсов у UI нет.
+                        // `style-src 'unsafe-inline'` нужен из-за inline-стилей
+                        // React/Tailwind; скрипты inline запрещены.
+                        .add((
+                            "Content-Security-Policy",
+                            "default-src 'self'; script-src 'self'; \
+                             style-src 'self' 'unsafe-inline'; \
+                             img-src 'self' data: blob:; \
+                             media-src 'self' data: blob:; \
+                             font-src 'self' data:; \
+                             connect-src 'self' ws: wss:; \
+                             object-src 'none'; base-uri 'none'; \
+                             frame-ancestors 'none'; form-action 'self'",
+                        ))
+                        .add(("X-Frame-Options", "DENY")),
                 )
                 .wrap(Logger::default())
                 .app_data(db.clone())

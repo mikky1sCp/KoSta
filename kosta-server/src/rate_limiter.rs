@@ -71,6 +71,11 @@ pub static HTTP_LIMITER: LazyLock<RateLimiter<String>> =
 /// Логин/регистрация: bcrypt на каждый запрос, поэтому лимит отдельный и жёсткий.
 pub static LOGIN_LIMITER: LazyLock<RateLimiter<String>> =
     LazyLock::new(|| RateLimiter::new(Duration::from_secs(60), 10)); // 10 попыток входа в минуту с IP
+/// Перебор пароля конкретного аккаунта: лимит по IP не спасает от
+/// распределённого перебора (боты с разных адресов бьют по одному номеру),
+/// поэтому считаем ещё и по нормализованному номеру.
+pub static LOGIN_ACCOUNT_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(15 * 60), 10)); // 10 попыток на номер за 15 минут
 /// Загрузка медиа: запись на диск и сообщение в историю. Считаем по
 /// пользователю (а не по IP), чтобы общий HTTP-лимит не был единственной
 /// защитой от заваливания диска файлами.
@@ -201,5 +206,24 @@ mod tests {
         assert!(limiter.check("ip".to_string()).is_ok());
         assert!(limiter.check("ip".to_string()).is_ok());
         assert!(limiter.check("ip".to_string()).is_err());
+    }
+
+    #[test]
+    fn login_account_limiter_blocks_after_account_limit() {
+        // Глобальный ограничитель: ключ уникален для прогона, чтобы тесты не
+        // влияли друг на друга. Обращаемся к check() напрямую — check_limit()
+        // зависит от KOSTA_RATE_LIMIT_DISABLED и в тестах недетерминирован.
+        let key = format!("test-account-{}", rand::random::<u64>());
+        for attempt in 0..10 {
+            assert!(
+                LOGIN_ACCOUNT_LIMITER.check(key.clone()).is_ok(),
+                "попытка {} должна проходить",
+                attempt + 1
+            );
+        }
+        assert!(
+            LOGIN_ACCOUNT_LIMITER.check(key).is_err(),
+            "11-я попытка должна блокироваться"
+        );
     }
 }

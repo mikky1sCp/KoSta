@@ -114,6 +114,12 @@ pub async fn upload_avatar(
     if body.is_empty() {
         return Ok(bad_request("empty image"));
     }
+    // Content-Type объявляет клиент: сверяем с фактическими байтами, иначе
+    // под image/png можно было бы сохранить произвольный файл.
+    if !media::content_matches_mime(&body, &mime) {
+        return Ok(HttpResponse::UnsupportedMediaType()
+            .json(json!({ "error": "image content does not match declared type" })));
+    }
 
     let key = match media::save_avatar(user_id, &body, &mime) {
         Ok(key) => key,

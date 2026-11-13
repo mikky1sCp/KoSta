@@ -84,6 +84,13 @@ pub async fn upload_media(
     if body.len() as u64 > max_bytes {
         return Ok(payload_too_large("Файл слишком большой"));
     }
+    // Заголовок Content-Type приходит от клиента, поэтому сверяем его с
+    // сигнатурой содержимого: иначе под `image/png` можно прислать что угодно.
+    if !media::content_matches_mime(&body, &mime) {
+        return Ok(unsupported_media_type(
+            "Содержимое файла не соответствует типу",
+        ));
+    }
 
     let storage = match media::storage() {
         Ok(storage) => storage,

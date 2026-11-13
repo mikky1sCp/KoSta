@@ -22,6 +22,8 @@ All field names use `snake_case` (consistent with the existing API).
   (this prevents account enumeration).
 - Validation: phone is an optional `+` followed by 5–20 digits; password is 8–128
   characters; otherwise `400`.
+- Rate limits: `429` when the per-IP login limit (10/min) or the per-account
+  limit (10 attempts per 15 minutes for the same phone number) is exceeded.
 - `200` response:
 
 ```json
@@ -67,10 +69,13 @@ an empty or blank string resets the name back to the phone number).
 
 Upload a profile picture. The raw image is the request body and its type comes from
 `Content-Type`; only `image/png`, `image/jpeg` and `image/webp` are accepted, up to
-5 MiB. Replacing the avatar deletes the previous file.
+5 MiB. The declared type is checked against the file signature (PNG/JPEG/WebP magic
+bytes), so a file with spoofed `Content-Type` is rejected. Replacing the avatar
+deletes the previous file.
 
 - `200` — `{"ok": true, "has_avatar": true}`
-- `400` — empty body; `415` — unsupported type; `413` — too large.
+- `400` — empty body; `415` — unsupported type or bytes that do not match it;
+  `413` — too large.
 
 ### GET /api/avatars/{user_id}
 
@@ -303,7 +308,9 @@ Uploads a file and creates a message in the dialog atomically.
   types: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `application/pdf`,
   `text/plain`, `application/zip`, `video/mp4`, plus audio for voice messages:
   `audio/webm`, `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`. MIME types are
-  validated; other types return `415`.
+  validated; other types return `415`. The declared `Content-Type` must also match
+  the file signature (magic bytes): e.g. PNG bytes sent as `text/plain` are rejected
+  with `415`, and `text/plain` must be valid UTF-8.
 - Only dialog participants may upload (`403` otherwise, `404` for an unknown
   dialog). Rate-limited like the rest of the HTTP API.
 - `200` response — the created `MessageItem` (see `/api/history`), with

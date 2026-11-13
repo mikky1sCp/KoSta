@@ -368,7 +368,8 @@ check('реакция: чужой диалог -> 403', foreignReaction.status =
 const deletedReaction = await react(tokenA, replyId, '👍');
 check('реакция: удалённое сообщение -> 404', deletedReaction.status === 404, `status ${deletedReaction.status}`);
 // ---------- 6. Голосовое сообщение (аудио-вложение) ----------
-// Содержимое не проверяется сервером: важен MIME из заголовка.
+// Сервер сверяет байты с сигнатурой контейнера, поэтому у webm-фикстуры есть
+// EBML-заголовок (1A45DFA3), а не произвольные данные.
 const voiceBytes = Buffer.from('1a45dfa3a3428681', 'hex');
 const voiceUpload = await fetch(
   `${BASE}/api/chats/${dialogId}/media?name=${encodeURIComponent('voice-1.webm')}`,

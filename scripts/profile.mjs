@@ -142,6 +142,19 @@ const badType = await fetch(`${BASE}/api/me/avatar`, {
 });
 check('неподдерживаемый тип -> 415', badType.status === 415, `status ${badType.status}`);
 
+// Тип объявляет клиент, но сервер сверяет его с сигнатурой: SVG под видом
+// PNG не должен сохраниться как аватар.
+const spoofedAvatar = await fetch(`${BASE}/api/me/avatar`, {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${tokenA}`, 'Content-Type': 'image/png' },
+  body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
+});
+check(
+  'содержимое не совпадает с типом картинки -> 415',
+  spoofedAvatar.status === 415,
+  `status ${spoofedAvatar.status}`,
+);
+
 const emptyAvatar = await fetch(`${BASE}/api/me/avatar`, {
   method: 'POST',
   headers: { Authorization: `Bearer ${tokenA}`, 'Content-Type': 'image/png' },

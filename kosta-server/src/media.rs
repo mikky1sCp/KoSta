@@ -62,6 +62,86 @@ pub(crate) fn is_supported_mime(mime: &str) -> bool {
     extension_for_mime(mime).is_some()
 }
 
+/// MIME по сигнатуре содержимого (магическим байтам).
+///
+/// `None` означает, что формат по заголовку не распознан; для `text/plain`
+/// это нормально (у текста сигнатуры нет). Для остальных типов из белого
+/// списка сигнатура есть всегда, поэтому `None` для них — повод отказать.
+pub(crate) fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
+    // Изображения
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+
+    // Документы и архивы.
+    if bytes.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    // Пустой ZIP-архив начинается с сигнатуры конца каталога (PK\x05\x06),
+    // а не с локального заголовка файла.
+    if bytes.starts_with(&[0x50, 0x4B, 0x03, 0x04])
+        || bytes.starts_with(&[0x50, 0x4B, 0x05, 0x06])
+        || bytes.starts_with(&[0x50, 0x4B, 0x07, 0x08])
+    {
+        return Some("application/zip");
+    }
+
+    // ISO-BMFF (mp4/m4a): box `ftyp` со смещения 4, бренд решает, аудио или видео.
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = &bytes[8..12];
+        return Some(if brand.starts_with(b"M4A") || brand.starts_with(b"M4B") {
+            "audio/mp4"
+        } else {
+            "video/mp4"
+        });
+    }
+    // EBML (Matroska/WebM): в белом списке только аудио-вариант.
+    if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some("audio/webm");
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some("audio/ogg");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+        return Some("audio/wav");
+    }
+    // MP3: тег ID3 в начале либо синхрослово MPEG-кадра (0xFF 0xEx).
+    if bytes.starts_with(b"ID3") {
+        return Some("audio/mpeg");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 {
+        return Some("audio/mpeg");
+    }
+
+    None
+}
+
+/// Совпадает ли содержимое файла с объявленным MIME-типом.
+///
+/// Проверка не даёт положить произвольные байты под видом разрешённого типа:
+/// заявленный `image/png` обязан начинаться с PNG-сигнатуры, `text/plain` —
+/// быть валидным UTF-8 без NUL-байтов. Контейнеры `audio/mp4` и `video/mp4`
+/// взаимозаменяемы (это один и тот же ISO-BMFF, различие только в бренде).
+pub(crate) fn content_matches_mime(bytes: &[u8], mime: &str) -> bool {
+    match sniff_mime(bytes) {
+        Some(detected) => {
+            detected == mime
+                || (mime == "audio/mp4" && detected == "video/mp4")
+                || (mime == "video/mp4" && detected == "audio/mp4")
+        }
+        None => mime == "text/plain" && !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok(),
+    }
+}
+
 /// Безопасное имя файла для отдачи клиенту и хранения в БД.
 ///
 /// Берём только basename (после `/` и `\`), выкидываем управляющие символы,
@@ -155,6 +235,13 @@ impl MediaStorage {
                 self.max_bytes
             ));
         }
+        // Объявленный MIME обязан совпадать с сигнатурой содержимого.
+        if !content_matches_mime(bytes, mime) {
+            return Err(anyhow!(
+                "file content does not match the declared media type: {}",
+                mime
+            ));
+        }
 
         let dialog_dir = self.dir.join(dialog_id.to_string());
         std::fs::create_dir_all(&dialog_dir).with_context(|| {
@@ -240,6 +327,12 @@ impl MediaStorage {
                 "avatar is too large: {} bytes (max {})",
                 bytes.len(),
                 AVATAR_MAX_BYTES
+            ));
+        }
+        if !content_matches_mime(bytes, mime) {
+            return Err(anyhow!(
+                "avatar content does not match the declared media type: {}",
+                mime
             ));
         }
 
@@ -451,6 +544,12 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// Минимальные сигнатуры форматов: содержимое не разбирается, проверяются
+    /// только магические байты, поэтому для теста достаточно заголовка.
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+    const PDF: &[u8] = b"%PDF-1.4\n%test\n";
+    const WEBM: &[u8] = &[0x1A, 0x45, 0xDF, 0xA3, 0x01, 0x02];
+
     /// Временное хранилище, не трогающее глобальный OnceLock.
     struct TempMedia {
         storage: MediaStorage,
@@ -542,7 +641,7 @@ mod tests {
     #[test]
     fn save_read_delete_roundtrip() {
         let temp = TempMedia::new(25);
-        let bytes = b"hello media";
+        let bytes = PNG;
         let saved = temp
             .storage
             .save(42, bytes, "photo.png", "image/png")
@@ -587,7 +686,7 @@ mod tests {
         let temp = TempMedia::new(25);
         temp.storage.save(7, b"one", "a.txt", "text/plain").unwrap();
         temp.storage
-            .save(7, b"two", "b.pdf", "application/pdf")
+            .save(7, PDF, "b.pdf", "application/pdf")
             .unwrap();
         assert!(temp.storage.dir().join("7").is_dir());
 
@@ -650,5 +749,89 @@ mod tests {
         }
         // Валидный по форме, но отсутствующий файл — тоже ошибка чтения.
         assert!(temp.storage.read(&format!("{key}.png")).is_err());
+    }
+
+    #[test]
+    fn sniff_mime_detects_whitelisted_formats() {
+        let cases: &[(&[u8], &str)] = &[
+            (PNG, "image/png"),
+            (&[0xFF, 0xD8, 0xFF, 0xE0, 0x00], "image/jpeg"),
+            (b"GIF89a....", "image/gif"),
+            (b"RIFF\x24\x00\x00\x00WEBPVP8 ", "image/webp"),
+            (PDF, "application/pdf"),
+            (b"PK\x03\x04rest", "application/zip"),
+            (b"PK\x05\x06\x00\x00\x00\x00", "application/zip"),
+            (b"\x00\x00\x00\x18ftypisom....", "video/mp4"),
+            (b"\x00\x00\x00\x18ftypM4A ....", "audio/mp4"),
+            (WEBM, "audio/webm"),
+            (b"OggS\x00\x02", "audio/ogg"),
+            (b"RIFF\x24\x00\x00\x00WAVEfmt ", "audio/wav"),
+            (b"ID3\x04\x00\x00", "audio/mpeg"),
+            (&[0xFF, 0xFB, 0x90, 0x00], "audio/mpeg"),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(sniff_mime(bytes), Some(*expected), "сигнатура {expected}");
+        }
+        // Мусор без известной сигнатуры не распознаётся.
+        assert_eq!(sniff_mime(b"just some text"), None);
+        assert_eq!(sniff_mime(b""), None);
+    }
+
+    #[test]
+    fn content_matches_mime_rejects_spoofed_type() {
+        assert!(content_matches_mime(PNG, "image/png"));
+        // HTML/JS под видом картинки — ровно то, что должна ловить проверка.
+        assert!(!content_matches_mime(
+            b"<html><script>alert(1)</script>",
+            "image/png"
+        ));
+        assert!(
+            !content_matches_mime(PNG, "text/plain"),
+            "PNG-байты не являются текстом"
+        );
+        assert!(content_matches_mime(b"plain text\n", "text/plain"));
+        assert!(
+            !content_matches_mime(b"text\x00with nul", "text/plain"),
+            "NUL-байт выдаёт двоичные данные"
+        );
+        assert!(!content_matches_mime(&[0xFF, 0xD8, 0xFF], "video/mp4"));
+        // mp4-семейство: бренд решает объявленный MIME, но контейнер один.
+        assert!(content_matches_mime(
+            b"\x00\x00\x00\x18ftypM4A ....",
+            "video/mp4"
+        ));
+        assert!(content_matches_mime(
+            b"\x00\x00\x00\x18ftypisom....",
+            "audio/mp4"
+        ));
+        assert!(!content_matches_mime(b"random bytes", "application/zip"));
+    }
+
+    #[test]
+    fn save_rejects_content_that_does_not_match_mime() {
+        let temp = TempMedia::new(25);
+        assert!(
+            temp.storage
+                .save(1, b"<html>x</html>", "x.png", "image/png")
+                .is_err(),
+            "HTML под видом PNG должен отвергаться"
+        );
+        assert!(
+            temp.storage
+                .save(1, &[0x89, b'P'], "x.png", "image/png")
+                .is_err(),
+            "обрезанная сигнатура тоже не проходит"
+        );
+        assert!(
+            temp.storage.save(1, PNG, "x.png", "image/png").is_ok(),
+            "настоящий PNG-заголовок принимается"
+        );
+
+        // Аватар проверяется по тем же правилам.
+        assert!(
+            temp.storage.save_avatar(1, b"<svg/>", "image/png").is_err(),
+            "текст под видом аватара не сохраняется"
+        );
+        assert!(temp.storage.save_avatar(1, PNG, "image/png").is_ok());
     }
 }

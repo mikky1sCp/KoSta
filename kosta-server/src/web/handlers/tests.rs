@@ -13,3 +13,14 @@ fn percent_encoding_keeps_ascii_and_encodes_unicode() {
     );
     assert_eq!(percent_encode_filename("a+b;c.pdf"), "a%2Bb%3Bc.pdf");
 }
+
+#[test]
+fn login_account_key_ignores_leading_plus() {
+    assert_eq!(
+        super::auth::login_account_key("+79990000000"),
+        "79990000000"
+    );
+    assert_eq!(super::auth::login_account_key("79990000000"), "79990000000");
+    // Внутренний «+» недопустим форматом телефона, но ключ не должен паниковать.
+    assert_eq!(super::auth::login_account_key("++12345"), "+12345");
+}

@@ -168,9 +168,11 @@ Configured in `config.toml`:
 | `media.max_upload_mb` | 25 | maximum size of a single upload, MiB |
 
 Additionally, the server caps pending handshakes at 10 000 with a 60 s TTL,
-rate-limits handshakes to 30 per minute per IP, logins to 10 per minute per IP,
-registrations to 5 per hour per IP and WebSocket messages to 10 per second per
-user. MTProto frames are capped at 1 MiB, message text at 4096 characters.
+rate-limits handshakes to 30 per minute per IP, logins to 10 per minute per IP
+and 10 per 15 minutes per account (so a distributed password brute-force against
+one phone number is throttled too), registrations to 5 per hour per IP and
+WebSocket messages to 10 per second per user. MTProto frames are capped at
+1 MiB, message text at 4096 characters.
 Abandoned sessions (completed handshakes that never signed up) are purged after
 an hour, and sessions idle for more than 30 days are removed by an hourly cleanup
 task.
@@ -236,7 +238,9 @@ The database schema is migrated on startup (new columns for media, group admins 
 session timestamps), foreign keys are enabled, and SQLite runs in WAL mode.
 Uploaded files are stored on disk under `media/<dialog_id>/` with random names; the
 allowed MIME types are PNG/JPEG/WebP/GIF, PDF, plain text, ZIP, MP4 and audio
-(WebM, OGG, MP3, M4A, WAV). Files are
+(WebM, OGG, MP3, M4A, WAV). The declared `Content-Type` is checked against the
+file signature (magic bytes), so arbitrary bytes cannot be uploaded under an
+allowed type; `text/plain` must be valid UTF-8. Files are
 served only to dialog participants through an authenticated endpoint.
 
 ## Layout

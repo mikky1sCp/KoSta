@@ -4,7 +4,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::db::Database;
-use crate::rate_limiter::{check_limit, LOGIN_LIMITER};
+use crate::rate_limiter::{check_limit, LOGIN_ACCOUNT_LIMITER, LOGIN_LIMITER};
 use crate::web::auth;
 use crate::web::client_addr::client_ip;
 use crate::web::models::{LoginRequest, LoginResponse};
@@ -33,6 +33,12 @@ pub async fn login(
     }
     if !valid_password(&json.password) {
         return Ok(bad_request("Пароль должен быть от 8 до 128 символов"));
+    }
+
+    // Второй лимит — на номер, а не на IP: распределённый перебор пароля
+    // с разных адресов не должен обходить ограничение.
+    if let Err(e) = check_limit(&LOGIN_ACCOUNT_LIMITER, login_account_key(&json.phone)) {
+        return Ok(rate_limited(e));
     }
 
     let existing = match db.get_user_id_by_phone(&json.phone) {
@@ -88,6 +94,12 @@ pub async fn login(
         user_id: Some(user_id),
         error: None,
     }))
+}
+
+/// Ключ лимита аккаунта: номер без ведущего `+`, чтобы `+7999…` и `7999…`
+/// считались одним и тем же номером.
+pub(super) fn login_account_key(phone: &str) -> String {
+    phone.strip_prefix('+').unwrap_or(phone).to_string()
 }
 
 /// Отзывает текущий токен и рвёт WebSocket-соединения этой сессии.

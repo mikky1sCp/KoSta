@@ -380,6 +380,22 @@ const badMime = await fetch(
 );
 check('media: запрещённый MIME -> 415', badMime.status === 415, `status ${badMime.status}`);
 
+// Тип объявляет клиент, но сервер сверяет его с сигнатурой содержимого:
+// PNG-байты под видом text/plain должны получить 415.
+const spoofedMime = await fetch(
+  `${BASE}/api/chats/${privateId}/media?name=${encodeURIComponent('spoofed.txt')}`,
+  {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'text/plain' },
+    body: pngBytes,
+  },
+);
+check(
+  'media: содержимое не совпадает с MIME -> 415',
+  spoofedMime.status === 415,
+  `status ${spoofedMime.status}`,
+);
+
 const emptyUpload = await fetch(
   `${BASE}/api/chats/${privateId}/media?name=${encodeURIComponent('empty.png')}`,
   {
