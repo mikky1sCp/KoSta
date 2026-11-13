@@ -68,14 +68,16 @@ The UI lives in `web-ui/src` (React + TypeScript + Tailwind v4). `npm run build`
 produces `web-ui/dist`, which is what the Rust server serves. The API/WebSocket
 contract is described in [docs/web-api.md](docs/web-api.md).
 
-UI features: login/registration, profile with display name and avatar, chat list with
-search and unread badges, private chats and groups, group administration
-(admin-only add/remove, rename, leave), online status, typing indicators, read
-receipts, replies with quotes, message editing and deletion, message reactions,
-pinned messages, message search inside a chat, emoji picker, voice messages,
-desktop notifications with a sound for incoming messages, message history
-pagination, photo and file attachments, light/dark theme and a responsive mobile
-layout.
+UI features: login/registration, profile with display name, public `@username` and
+avatar, chat list with search and unread badges, chat management (pin, mute for
+1 h/8 h/forever, archive, mark as unread, delete/leave), private chats and groups,
+group administration (admin-only add/remove, rename, leave), global search palette
+(<kbd>Ctrl+K</kbd>: messages across all chats, people by `@username` and chats, with
+a jump to the message), online status, typing indicators, read receipts, replies
+with quotes, message editing and deletion, message reactions, pinned messages,
+message search inside a chat, emoji picker, voice messages, desktop notifications
+with a sound for incoming messages, message history pagination, photo and file
+attachments, light/dark theme and a responsive mobile layout.
 
 ## End-to-end checks
 
