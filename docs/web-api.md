@@ -106,7 +106,12 @@ An array of `ChatItem`, sorted by the last message time:
   "last_timestamp": 1794057537,
   "unread_count": 2,
   "other_user_id": 8,
-  "is_online": true
+  "is_online": true,
+  "pinned": false,
+  "muted": false,
+  "muted_until": null,
+  "archived": false,
+  "marked_unread": false
 }
 ```
 
@@ -114,6 +119,12 @@ An array of `ChatItem`, sorted by the last message time:
   stored title for a group.
 - `other_user_id` and `is_online` are present for private chats only.
 - `unread_count` is the number of unread incoming messages.
+- `pinned`, `muted`, `archived` and `marked_unread` are the current user's personal
+  state of the chat (see `PATCH /api/chats/{id}/state`). Chats the user removed from
+  their list (`deleted`) are not returned at all. Pinned chats come first, then by the
+  last message time.
+- `muted_until` is when the mute expires (unix seconds); `0` means "forever" and is
+  omitted when the chat is not muted. An expired mute is reported as `muted: false`.
 
 ### GET /api/history?chat_id=12&limit=50&offset=0
 
@@ -233,7 +244,9 @@ Chat details (used by the chat header and the "group info" modal):
 ```json
 {
   "chat": { "id": 12, "title": "+7999...", "is_group": false, "last_message": null,
-            "last_timestamp": null, "unread_count": 0, "other_user_id": 8, "is_online": false },
+            "last_timestamp": null, "unread_count": 0, "other_user_id": 8,
+            "is_online": false, "pinned": false, "muted": false, "muted_until": null,
+            "archived": false, "marked_unread": false },
   "participants": [
     {"user_id": 7, "phone": "+79990000000", "is_admin": false, "is_online": true},
     {"user_id": 8, "phone": "+79990000001", "is_admin": false, "is_online": false}
@@ -293,6 +306,37 @@ The creator becomes the admin. `phones` is 0..=199 numbers (duplicates are ignor
 ```
 
 Group admin only, `title` 1..=128 characters. `200` — `ChatDetails`.
+
+### PATCH /api/chats/{id}/state
+
+Personal chat state of the current user. Every field is optional; only the provided
+ones change:
+
+```json
+{"pinned": true, "archived": false, "muted": true, "mute_duration": "8h",
+ "marked_unread": false}
+```
+
+- `pinned` — pin/unpin the chat at the top of the list (personal, not the pinned
+  message).
+- `archived` — move the chat to the archive section / back.
+- `muted` — disable notifications; `mute_duration` is `"1h"`, `"8h"` or `"forever"`
+  (default — forever). `muted: false` clears the mute. An expired mute is reported as
+  `muted: false`.
+- `marked_unread` — manually mark the chat as unread (a dot in the list); reading the
+  chat clears it.
+
+Any participant may change their own state (`403` otherwise). `200` —
+`{"ok": true, "chat": ChatItem}`; the user's own tabs receive a `chat_state` event with
+the same chat object.
+
+### DELETE /api/chats/{id}
+
+Removes the chat from the current user's list. A private chat is hidden softly: the
+peer keeps the history, and the chat reappears when the peer sends a new message. A
+group is left (an empty group is deleted entirely). `200 {"ok": true, "deleted": false}`
+for a hidden private chat, `{"deleted": true}` when the dialog was deleted from the
+database. The user's own tabs receive a `chat_deleted` event.
 
 ### POST /api/chats/{id}/participants
 
@@ -418,6 +462,10 @@ Server → client:
   its own flag
 - `dialog_pinned {"dialog_id", "message": MessageItem | null}` — the pinned message
   changed; `null` means the pin was cleared
+- `chat_state {"chat": ChatItem}` — the current user's personal chat state changed
+  (pin, mute, archive, "unread" mark); sent only to that user's own connections
+- `chat_deleted {"dialog_id", "deleted"}` — the chat was removed from the current
+  user's list; sent only to that user's own connections
 - `error {"error"}`
 
 Limits: auth — 10 attempts/minute per IP, frames — 60/s per IP, messages — 10/s per

@@ -1,4 +1,4 @@
-import type { Message, WsStatus } from './types';
+import type { ChatItem, Message, WsStatus } from './types';
 import { parseMessagePayload } from './utils/message';
 
 type Payload = Record<string, unknown>;
@@ -27,6 +27,8 @@ export type WsEvent =
       type: 'dialog_pinned';
       payload: { dialog_id: number; message: (Message & { dialog_id?: number }) | null };
     }
+  | { type: 'chat_state'; payload: { chat: ChatItem } }
+  | { type: 'chat_deleted'; payload: { dialog_id: number; deleted: boolean } }
   | { type: 'error'; payload: { error: string } };
 
 export interface WsHandlers {
@@ -74,6 +76,36 @@ function parseMessage(payload: Payload): (Message & { dialog_id?: number }) | nu
   return {
     ...message,
     ...(dialogId !== null ? { dialog_id: dialogId } : {}),
+  };
+}
+
+/**
+ * Карточка чата из события `chat_state` (сервер шлёт её после изменения
+ * закрепления/мьюта/архива). Неизвестные поля игнорируются, чтобы старые
+ * серверы не роняли разбор.
+ */
+function parseChatItem(payload: unknown): ChatItem | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const id = asNumber(payload.id);
+  if (id <= 0) {
+    return null;
+  }
+  return {
+    id,
+    title: asString(payload.title),
+    is_group: payload.is_group === true,
+    last_message: typeof payload.last_message === 'string' ? payload.last_message : null,
+    last_timestamp: asNullableNumber(payload.last_timestamp),
+    unread_count: asNumber(payload.unread_count),
+    other_user_id: asNullableNumber(payload.other_user_id),
+    is_online: typeof payload.is_online === 'boolean' ? payload.is_online : null,
+    pinned: payload.pinned === true,
+    muted: payload.muted === true,
+    muted_until: asNullableNumber(payload.muted_until),
+    archived: payload.archived === true,
+    marked_unread: payload.marked_unread === true,
   };
 }
 
@@ -336,6 +368,23 @@ export class WsClient {
           payload: {
             dialog_id: asNumber(payload.dialog_id),
             message,
+          },
+        });
+        break;
+      }
+      case 'chat_state': {
+        const chat = parseChatItem(payload.chat);
+        if (chat) {
+          this.handlers.onEvent({ type: 'chat_state', payload: { chat } });
+        }
+        break;
+      }
+      case 'chat_deleted': {
+        this.handlers.onEvent({
+          type: 'chat_deleted',
+          payload: {
+            dialog_id: asNumber(payload.dialog_id),
+            deleted: payload.deleted === true,
           },
         });
         break;

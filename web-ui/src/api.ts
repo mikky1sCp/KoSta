@@ -473,6 +473,40 @@ export function createApi({ getToken, onUnauthorized }: ApiOptions) {
       );
     },
 
+    /**
+     * Меняет личное состояние чата у текущего пользователя: закрепление,
+     * архив, мьют и ручную пометку «непрочитано». Все поля необязательны.
+     */
+    updateChatState(
+      chatId: number,
+      state: {
+        pinned?: boolean;
+        archived?: boolean;
+        muted?: boolean;
+        muteDuration?: '1h' | '8h' | 'forever';
+        markedUnread?: boolean;
+      },
+    ): Promise<{ ok: boolean; chat: ChatItem }> {
+      const body: Record<string, unknown> = {};
+      if (state.pinned !== undefined) body.pinned = state.pinned;
+      if (state.archived !== undefined) body.archived = state.archived;
+      if (state.muted !== undefined) body.muted = state.muted;
+      if (state.muteDuration !== undefined) body.mute_duration = state.muteDuration;
+      if (state.markedUnread !== undefined) body.marked_unread = state.markedUnread;
+      return request<{ ok: boolean; chat: ChatItem }>(
+        `/chats/${encodeURIComponent(String(chatId))}/state`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      );
+    },
+
+    /** Удаляет чат из списка пользователя (личный — скрыть, группу — покинуть). */
+    deleteChat(chatId: number): Promise<{ ok: boolean; deleted: boolean }> {
+      return request<{ ok: boolean; deleted: boolean }>(
+        `/chats/${encodeURIComponent(String(chatId))}`,
+        { method: 'DELETE' },
+      );
+    },
+
     lookupUser(phone: string): Promise<UserLookup> {
       return request<UserLookup>(
         `/users/lookup?phone=${encodeURIComponent(phone)}`,

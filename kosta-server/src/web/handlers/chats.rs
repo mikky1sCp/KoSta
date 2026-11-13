@@ -9,16 +9,16 @@ use crate::rate_limiter::{check_limit, HTTP_LIMITER};
 use crate::web::auth;
 use crate::web::client_addr::client_ip;
 use crate::web::models::{
-    AddParticipantRequest, ChatItem, CreateGroupChatRequest, CreatePrivateChatRequest,
-    RenameChatRequest,
+    AddParticipantRequest, ChatItem, ChatStateRequest, CreateGroupChatRequest,
+    CreatePrivateChatRequest, RenameChatRequest,
 };
 use crate::web::state::WebState;
 
 use super::messages::message_item_from_row;
 use super::{
     bad_request, chat_details_response, chat_item, dialog_participants, forbidden, not_found,
-    path_id, rate_limited, server_error, valid_phone, MAX_GROUP_INVITEES, MAX_GROUP_PARTICIPANTS,
-    MAX_GROUP_TITLE_CHARS,
+    now_secs, path_id, rate_limited, server_error, valid_phone, MAX_GROUP_INVITEES,
+    MAX_GROUP_PARTICIPANTS, MAX_GROUP_TITLE_CHARS,
 };
 
 /// Список чатов текущего пользователя (пользователь берётся из токена).
@@ -534,4 +534,150 @@ pub async fn pin_message(
     state.broadcast_to_dialog(dialog_id, &event, None);
 
     Ok(HttpResponse::Ok().json(json!({ "ok": true, "pinned_message": pinned_item })))
+}
+
+/// Срок мьюта в unix-секундах: `0` — «навсегда».
+///
+/// Понимает `"1h"`, `"8h"` и `"forever"`; без значения — навсегда. Срок
+/// считает сервер, чтобы клиенту не пришлось доверять своим часам.
+fn parse_mute_duration(raw: Option<&str>) -> std::result::Result<i64, &'static str> {
+    match raw {
+        None | Some("forever") => Ok(0),
+        Some("1h") => Ok(now_secs() + 3600),
+        Some("8h") => Ok(now_secs() + 8 * 3600),
+        Some(_) => Err("mute_duration must be 1h, 8h or forever"),
+    }
+}
+
+/// Меняет личное состояние чата у текущего пользователя:
+/// `PATCH /api/chats/{id}/state`.
+///
+/// Меняются только переданные поля. Состояние индивидуально: закрепление,
+/// мьют и архив одного участника не влияют на остальных. Изменение
+/// рассылается всем соединениям этого пользователя (`chat_state`), чтобы
+/// другие вкладки не показывали устаревший список.
+pub async fn update_chat_state(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+    body: web::Json<ChatStateRequest>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let dialog_id = match path_id(&path, "id диалога") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let participants = match dialog_participants(&db, dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+
+    if let Some(pinned) = body.pinned {
+        if let Err(e) = db.set_chat_pinned(user_id, dialog_id, pinned) {
+            return Ok(server_error("failed to pin chat", e));
+        }
+    }
+    if let Some(archived) = body.archived {
+        if let Err(e) = db.set_chat_archived(user_id, dialog_id, archived) {
+            return Ok(server_error("failed to archive chat", e));
+        }
+    }
+    if let Some(muted) = body.muted {
+        let muted_until = if muted {
+            match parse_mute_duration(body.mute_duration.as_deref()) {
+                Ok(until) => Some(until),
+                Err(message) => return Ok(bad_request(message)),
+            }
+        } else {
+            None
+        };
+        if let Err(e) = db.set_chat_muted(user_id, dialog_id, muted_until) {
+            return Ok(server_error("failed to mute chat", e));
+        }
+    }
+    if let Some(marked) = body.marked_unread {
+        if let Err(e) = db.set_chat_marked_unread(user_id, dialog_id, marked) {
+            return Ok(server_error("failed to mark chat unread", e));
+        }
+    }
+
+    let chat = match db.get_chat_row(user_id, dialog_id) {
+        Ok(Some(row)) => chat_item(row),
+        Ok(None) => return Ok(not_found("dialog not found")),
+        Err(e) => return Ok(server_error("failed to load chat", e)),
+    };
+
+    let event = json!({
+        "type": "chat_state",
+        "payload": { "chat": chat }
+    })
+    .to_string();
+    state.broadcast_to_user(user_id, &event);
+
+    Ok(HttpResponse::Ok().json(json!({ "ok": true, "chat": chat })))
+}
+
+/// Удаляет чат из списка пользователя: `DELETE /api/chats/{id}`.
+///
+/// Личный диалог мягко скрывается у пользователя (собеседник не теряет
+/// историю), группу пользователь покидает. Возвращает `{"deleted": bool}` —
+/// был ли диалог удалён из БД целиком (пустая группа).
+pub async fn delete_chat(
+    req: HttpRequest,
+    db: web::Data<Arc<Database>>,
+    state: web::Data<WebState>,
+    path: web::Path<String>,
+) -> Result<HttpResponse> {
+    if let Err(e) = check_limit(&HTTP_LIMITER, client_ip(&req)) {
+        return Ok(rate_limited(e));
+    }
+    let user_id = match auth::authenticated_user(&req, &db) {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let dialog_id = match path_id(&path, "id диалога") {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
+    let participants = match dialog_participants(&db, dialog_id) {
+        Ok(participants) => participants,
+        Err(resp) => return Ok(resp),
+    };
+    if !participants.contains(&user_id) {
+        return Ok(forbidden("not a participant"));
+    }
+
+    let deleted = match db.delete_chat(user_id, dialog_id) {
+        Ok(deleted) => deleted,
+        Err(e) => return Ok(server_error("failed to delete chat", e)),
+    };
+    if deleted {
+        // Медиа-файлы удалённого диалога тоже не должны оставаться на диске.
+        if let Err(e) = media::delete_dialog(dialog_id) {
+            tracing::warn!(
+                "failed to delete media of empty dialog {}: {:#}",
+                dialog_id,
+                e
+            );
+        }
+    }
+
+    let event = json!({
+        "type": "chat_deleted",
+        "payload": { "dialog_id": dialog_id, "deleted": deleted }
+    })
+    .to_string();
+    state.broadcast_to_user(user_id, &event);
+
+    Ok(HttpResponse::Ok().json(json!({ "ok": true, "deleted": deleted })))
 }

@@ -242,6 +242,31 @@ impl Database {
         )?;
         // dialogs: закреплённое сообщение (одно на диалог).
         ensure_column(&conn, "dialogs", "pinned_message_id", "INTEGER")?;
+        // dialog_participants: личное состояние чата у каждого участника —
+        // закрепление, мьют, архив, удаление из списка и ручная пометка
+        // «непрочитано». Общее состояние диалога (название, pinned_message_id)
+        // живёт в `dialogs`, а всё персональное — здесь.
+        ensure_column(&conn, "dialog_participants", "pinned_at", "INTEGER")?;
+        // NULL — уведомления включены; 0 — навсегда; >0 — до этого момента.
+        ensure_column(&conn, "dialog_participants", "muted_until", "INTEGER")?;
+        ensure_column(
+            &conn,
+            "dialog_participants",
+            "archived",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "dialog_participants",
+            "deleted",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "dialog_participants",
+            "marked_unread",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         // Для старых групп админа нет: назначаем администратором первого
         // вступившего (создателя), иначе группу нельзя будет модерировать.
@@ -266,7 +291,7 @@ impl Database {
 }
 
 /// Текущее время в unix-секундах.
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

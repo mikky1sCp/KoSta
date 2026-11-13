@@ -28,6 +28,7 @@ import { NewGroupModal } from './components/modals/NewGroupModal';
 import { ChatInfoModal } from './components/modals/ChatInfoModal';
 import { ProfileModal } from './components/modals/ProfileModal';
 import { SearchPalette } from './components/SearchPalette';
+import type { MuteDuration } from './components/ChatListItem';
 
 const PAGE_SIZE = 50;
 const TYPING_TIMEOUT_MS = 3_000;
@@ -52,9 +53,13 @@ interface LightboxState {
 }
 
 function sortChats(chats: ChatItem[]): ChatItem[] {
-  return [...chats].sort(
-    (left, right) => (right.last_timestamp ?? 0) - (left.last_timestamp ?? 0),
-  );
+  return [...chats].sort((left, right) => {
+    // Закреплённые чаты всегда наверху, внутри групп — по последнему сообщению.
+    if (left.pinned !== right.pinned) {
+      return left.pinned ? -1 : 1;
+    }
+    return (right.last_timestamp ?? 0) - (left.last_timestamp ?? 0);
+  });
 }
 
 function toUiMessage(message: Message): UiMessage {
@@ -322,8 +327,9 @@ export function App() {
       }
       setChats((current) =>
         current.map((chat) =>
-          chat.id === chatId && chat.unread_count !== 0
-            ? { ...chat, unread_count: 0 }
+          chat.id === chatId &&
+          (chat.unread_count !== 0 || chat.marked_unread)
+            ? { ...chat, unread_count: 0, marked_unread: false }
             : chat,
         ),
       );
@@ -763,6 +769,117 @@ export function App() {
     setLightbox({ message, url });
   }, []);
 
+  // ---------- личное состояние чатов ----------
+  //
+  // Закрепление, мьют, архив и ручная пометка «непрочитано» меняются
+  // оптимистично, а затем сверяются с ответом сервера. Ошибка возвращает
+  // список к серверной правде через refreshChats.
+
+  const applyChatState = useCallback((chat: ChatItem) => {
+    setChats((current) =>
+      sortChats(current.map((item) => (item.id === chat.id ? chat : item))),
+    );
+  }, []);
+
+  const handleToggleChatPin = useCallback(
+    (chatId: number, pinned: boolean) => {
+      setChats((current) =>
+        sortChats(
+          current.map((chat) => (chat.id === chatId ? { ...chat, pinned } : chat)),
+        ),
+      );
+      void api
+        .updateChatState(chatId, { pinned })
+        .then((response) => applyChatState(response.chat))
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 401)) {
+            toast.error(getErrorMessage(error));
+          }
+          void refreshChats({ silent: true });
+        });
+    },
+    [api, applyChatState, refreshChats, toast],
+  );
+
+  const handleToggleChatArchive = useCallback(
+    (chatId: number, archived: boolean) => {
+      setChats((current) =>
+        current.map((chat) => (chat.id === chatId ? { ...chat, archived } : chat)),
+      );
+      void api
+        .updateChatState(chatId, { archived })
+        .then((response) => applyChatState(response.chat))
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 401)) {
+            toast.error(getErrorMessage(error));
+          }
+          void refreshChats({ silent: true });
+        });
+    },
+    [api, applyChatState, refreshChats, toast],
+  );
+
+  const handleMuteChat = useCallback(
+    (chatId: number, duration: MuteDuration | null) => {
+      const muted = duration !== null;
+      setChats((current) =>
+        current.map((chat) => (chat.id === chatId ? { ...chat, muted } : chat)),
+      );
+      void api
+        .updateChatState(chatId, { muted, muteDuration: duration ?? undefined })
+        .then((response) => applyChatState(response.chat))
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 401)) {
+            toast.error(getErrorMessage(error));
+          }
+          void refreshChats({ silent: true });
+        });
+    },
+    [api, applyChatState, refreshChats, toast],
+  );
+
+  const handleMarkChatUnread = useCallback(
+    (chatId: number) => {
+      setChats((current) =>
+        current.map((chat) =>
+          chat.id === chatId ? { ...chat, marked_unread: true } : chat,
+        ),
+      );
+      void api
+        .updateChatState(chatId, { markedUnread: true })
+        .then((response) => applyChatState(response.chat))
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 401)) {
+            toast.error(getErrorMessage(error));
+          }
+          void refreshChats({ silent: true });
+        });
+    },
+    [api, applyChatState, refreshChats, toast],
+  );
+
+  const handleDeleteChat = useCallback(
+    (chatId: number) => {
+      const chat = chatsRef.current.find((item) => item.id === chatId);
+      const isGroup = chat?.is_group ?? false;
+      const question = isGroup
+        ? 'Покинуть группу?'
+        : 'Удалить чат из списка? История у собеседника останется.';
+      if (!window.confirm(question)) {
+        return;
+      }
+      setChats((current) => current.filter((item) => item.id !== chatId));
+      setActiveChatId((current) => (current === chatId ? null : current));
+      void api.deleteChat(chatId).catch((error) => {
+        if (!(error instanceof ApiError && error.status === 401)) {
+          toast.error(getErrorMessage(error));
+        }
+        void refreshChats({ silent: true });
+      });
+    },
+    [api, refreshChats, toast],
+  );
+
   const closeLightbox = useCallback(() => {
     setLightbox(null);
   }, []);
@@ -833,15 +950,15 @@ export function App() {
         }
 
         // Уведомление и звук — только для входящих: свои сообщения
-        // пользователь и так видит.
+        // пользователь и так видит. Замьюченные чаты молчат.
         if (!isOutgoing) {
-          notifications.ping();
-          const chatTitle =
-            chatsRef.current.find((chat) => chat.id === dialogId)?.title ??
-            'KoSta';
-          notifications.notify(chatTitle, messagePreview(uiMessage), () => {
-            setActiveChatId(dialogId);
-          });
+          const chat = chatsRef.current.find((item) => item.id === dialogId);
+          if (!chat?.muted) {
+            notifications.ping();
+            notifications.notify(chat?.title ?? 'KoSta', messagePreview(uiMessage), () => {
+              setActiveChatId(dialogId);
+            });
+          }
         }
 
         if (!chatsRef.current.some((chat) => chat.id === dialogId)) {
@@ -968,6 +1085,23 @@ export function App() {
           break;
         }
         setPinnedMessage(message ? { ...message, pending: false } : null);
+        break;
+      }
+
+      case 'chat_state': {
+        const { chat } = event.payload;
+        applyChatState(chat);
+        // Если это открытый чат, обновляем и карточку деталей.
+        if (activeChatIdRef.current === chat.id) {
+          setDetails((current) => (current ? { ...current, chat } : current));
+        }
+        break;
+      }
+
+      case 'chat_deleted': {
+        const { dialog_id } = event.payload;
+        setChats((current) => current.filter((chat) => chat.id !== dialog_id));
+        setActiveChatId((current) => (current === dialog_id ? null : current));
         break;
       }
 
@@ -1306,7 +1440,13 @@ export function App() {
   const unreadTotal = useMemo(
     () =>
       chats.reduce(
-        (sum, chat) => sum + (chat.unread_count > 0 ? chat.unread_count : 0),
+        (sum, chat) =>
+          sum +
+          (chat.unread_count > 0
+            ? chat.unread_count
+            : chat.marked_unread
+              ? 1
+              : 0),
         0,
       ),
     [chats],
@@ -1392,6 +1532,12 @@ export function App() {
           onNewChat={() => setModal('new-chat')}
           onNewGroup={() => setModal('new-group')}
           onOpenProfile={() => setModal('profile')}
+          onTogglePin={handleToggleChatPin}
+          onToggleArchive={handleToggleChatArchive}
+          onMute={handleMuteChat}
+          onMarkUnread={handleMarkChatUnread}
+          onMarkRead={markChatRead}
+          onDeleteChat={handleDeleteChat}
           className={activeChatId !== null ? 'hidden md:flex' : 'flex'}
         />
 

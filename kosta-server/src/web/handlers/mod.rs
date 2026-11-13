@@ -9,8 +9,8 @@ mod tests;
 
 pub use auth::{login, logout};
 pub use chats::{
-    add_participant, create_group_chat, create_private_chat, get_chat, get_chats, mark_chat_read,
-    pin_message, remove_participant, rename_chat,
+    add_participant, create_group_chat, create_private_chat, delete_chat, get_chat, get_chats,
+    mark_chat_read, pin_message, remove_participant, rename_chat, update_chat_state,
 };
 pub use media::{download_media, upload_media};
 pub use messages::{delete_message, edit_message, get_history, search_history, toggle_reaction};
@@ -18,15 +18,14 @@ pub use profile::{get_avatar, get_me, lookup_user, search_users, update_me, uplo
 
 // Тела запросов остаются частью публичного API модуля (на них ссылаются
 // сигнатуры хендлеров), но по пути реэкспорта в бинарном крейте не читаются.
+use actix_web::{http::header, HttpRequest, HttpResponse};
+use anyhow::Result as AnyhowResult;
 #[allow(unused_imports)]
 pub use chats::PinMessageBody;
 #[allow(unused_imports)]
 pub use messages::{EditMessageBody, ReactionBody, SearchQuery};
 #[allow(unused_imports)]
 pub use profile::UpdateProfileBody;
-
-use actix_web::{http::header, HttpRequest, HttpResponse};
-use anyhow::Result as AnyhowResult;
 use serde_json::json;
 
 use crate::db::{ChatRow, Database, ParticipantRow};
@@ -155,6 +154,11 @@ fn chat_item(row: ChatRow) -> ChatItem {
         unread_count: row.unread_count,
         other_user_id: row.other_user_id,
         is_online: (!row.is_group).then_some(row.is_online),
+        pinned: row.pinned,
+        muted: row.muted,
+        muted_until: row.muted_until,
+        archived: row.archived,
+        marked_unread: row.marked_unread,
     }
 }
 

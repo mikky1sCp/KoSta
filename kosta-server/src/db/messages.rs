@@ -86,6 +86,10 @@ impl Database {
                 text.to_lowercase(),
             ],
         )?;
+        // Новое сообщение возвращает чат в список тем участникам, кто его
+        // скрыл («удалил»). Делаем здесь, в единственной точке сохранения,
+        // чтобы это работало и для web-API, и для бинарного протокола.
+        clear_deleted_for_dialog(&conn, dialog_id)?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -130,6 +134,7 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8)",
             rusqlite::params![dialog_id, sender_id, text, timestamp, media_key, mime, size, name],
         )?;
+        clear_deleted_for_dialog(&conn, dialog_id)?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -212,6 +217,12 @@ impl Database {
             "UPDATE messages SET read_status = 1
              WHERE dialog_id = ?1 AND sender_id != ?2
                AND read_status = 0 AND deleted = 0",
+            rusqlite::params![dialog_id, viewer_id],
+        )?;
+        // Ручная пометка «непрочитано» снимается вместе с прочтением чата.
+        conn.execute(
+            "UPDATE dialog_participants SET marked_unread = 0
+             WHERE dialog_id = ?1 AND user_id = ?2",
             rusqlite::params![dialog_id, viewer_id],
         )?;
         Ok(marked)
@@ -383,4 +394,17 @@ impl Database {
             .optional()?;
         Ok(found)
     }
+}
+
+/// Возвращает диалог в список всем участникам, которые его скрыли.
+///
+/// Вызывается из точки сохранения сообщения (текст или медиа), поэтому
+/// срабатывает и для web-API, и для бинарного протокола. Отдельный запрос,
+/// а не фильтр в выборке: `deleted` — мягкое скрытие, историю не трогаем.
+fn clear_deleted_for_dialog(conn: &rusqlite::Connection, dialog_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE dialog_participants SET deleted = 0 WHERE dialog_id = ?1",
+        rusqlite::params![dialog_id],
+    )?;
+    Ok(())
 }

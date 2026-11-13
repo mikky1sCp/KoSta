@@ -160,6 +160,9 @@ jobs:
       - name: Message search e2e
         run: node scripts/search.mjs
 
+      - name: Chat state (pin, mute, archive, delete) e2e
+        run: node scripts/chat-state.mjs
+
       - name: UI is served
         run: curl -sf http://127.0.0.1:8081/ | grep -q "KoSta"
 

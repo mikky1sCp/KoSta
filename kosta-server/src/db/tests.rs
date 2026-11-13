@@ -641,3 +641,75 @@ fn global_search_finds_messages_across_user_dialogs() {
     let hits = t.db.search_messages_global(u1, "привет", 10).unwrap();
     assert_eq!(hits.len(), 1);
 }
+
+#[test]
+fn chat_state_is_personal_and_mutable() {
+    let t = TempDb::new();
+    let u1 = t.db.create_user("+2100", "pass").unwrap();
+    let u2 = t.db.create_user("+2101", "pass").unwrap();
+    let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+
+    t.db.set_chat_pinned(u1, dialog_id, true).unwrap();
+    t.db.set_chat_muted(u1, dialog_id, Some(0)).unwrap();
+    t.db.set_chat_archived(u1, dialog_id, true).unwrap();
+    t.db.set_chat_marked_unread(u1, dialog_id, true).unwrap();
+
+    let chat_for = |user_id: i64| {
+        t.db.get_user_chats(user_id)
+            .unwrap()
+            .into_iter()
+            .find(|chat| chat.id == dialog_id)
+            .unwrap()
+    };
+    let mine = chat_for(u1);
+    assert!(mine.pinned, "закрепление");
+    assert!(mine.muted, "мьют навсегда");
+    assert_eq!(mine.muted_until, Some(0));
+    assert!(mine.archived, "архив");
+    assert!(mine.marked_unread, "ручная пометка");
+
+    // Состояние одного участника не видно другому.
+    let peers = chat_for(u2);
+    assert!(!peers.pinned && !peers.muted && !peers.archived && !peers.marked_unread);
+
+    t.db.set_chat_muted(u1, dialog_id, Some(now_secs() - 1))
+        .unwrap();
+    assert!(!chat_for(u1).muted, "истёкший мьют считается снятым");
+}
+
+#[test]
+fn delete_private_chat_hides_only_for_author() {
+    let t = TempDb::new();
+    let u1 = t.db.create_user("+2102", "pass").unwrap();
+    let u2 = t.db.create_user("+2103", "pass").unwrap();
+    let dialog_id = t.db.create_private_dialog(u1, u2).unwrap();
+    t.db.save_message(dialog_id, u2, "привет", 100, false, None, None)
+        .unwrap();
+
+    assert!(
+        !t.db.delete_chat(u1, dialog_id).unwrap(),
+        "диалог не удалён из БД"
+    );
+    assert!(t
+        .db
+        .get_user_chats(u1)
+        .unwrap()
+        .iter()
+        .all(|c| c.id != dialog_id));
+    assert!(t
+        .db
+        .get_user_chats(u2)
+        .unwrap()
+        .iter()
+        .any(|c| c.id == dialog_id));
+
+    // Новое сообщение от собеседника возвращает чат в список.
+    t.db.save_message(dialog_id, u2, "вернулся", 200, false, None, None)
+        .unwrap();
+    assert!(t
+        .db
+        .get_user_chats(u1)
+        .unwrap()
+        .iter()
+        .any(|c| c.id == dialog_id));
+}

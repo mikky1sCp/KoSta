@@ -47,6 +47,16 @@ export interface ChatItem {
   other_user_id?: number | null;
   /** Только для личных чатов. */
   is_online?: boolean | null;
+  /** Чат закреплён у текущего пользователя (всегда наверху списка). */
+  pinned: boolean;
+  /** Уведомления отключены прямо сейчас (учитывается срок мьюта). */
+  muted: boolean;
+  /** До какого момента действует мьют (unix seconds; 0 — навсегда). */
+  muted_until?: number | null;
+  /** Чат убран в архив у текущего пользователя. */
+  archived: boolean;
+  /** Текущий пользователь вручную пометил чат непрочитанным. */
+  marked_unread: boolean;
 }
 
 export interface Message {

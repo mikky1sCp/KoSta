@@ -127,7 +127,8 @@ pub async fn upload_media(
     };
 
     // Событие для WS-подписчиков диалога: is_outgoing всегда false, клиент
-    // сравнивает sender_id со своим user_id (как в ws.rs).
+    // сравнивает sender_id со своим user_id (как в ws.rs). Сброс «удалён из
+    // списка» уже сделан в `db.save_media_message`.
     let event = json!({
         "type": "new_message",
         "payload": {

@@ -100,7 +100,12 @@ pub fn run_web_server(
                         .service(
                             web::resource("/chats/{id}")
                                 .route(web::get().to(handlers::get_chat))
-                                .route(web::patch().to(handlers::rename_chat)),
+                                .route(web::patch().to(handlers::rename_chat))
+                                .route(web::delete().to(handlers::delete_chat)),
+                        )
+                        .service(
+                            web::resource("/chats/{id}/state")
+                                .route(web::patch().to(handlers::update_chat_state)),
                         )
                         .service(
                             web::resource("/chats/{id}/participants")

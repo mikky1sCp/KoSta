@@ -1,5 +1,6 @@
 import { useMemo, useState, type Ref } from 'react';
 import {
+  Archive,
   MessageCircle,
   MessageSquarePlus,
   Moon,
@@ -10,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ChatItem, Me, Theme, WsStatus } from '../types';
-import { ChatListItem } from './ChatListItem';
+import { ChatListItem, type MuteDuration } from './ChatListItem';
 import { cn } from '../utils/classNames';
 
 interface SidebarProps {
@@ -28,6 +29,12 @@ interface SidebarProps {
   onNewChat: () => void;
   onNewGroup: () => void;
   onOpenProfile: () => void;
+  onTogglePin: (chatId: number, pinned: boolean) => void;
+  onToggleArchive: (chatId: number, archived: boolean) => void;
+  onMute: (chatId: number, duration: MuteDuration | null) => void;
+  onMarkUnread: (chatId: number) => void;
+  onMarkRead: (chatId: number) => void;
+  onDeleteChat: (chatId: number) => void;
   className?: string;
 }
 
@@ -87,23 +94,62 @@ export function Sidebar({
   onNewChat,
   onNewGroup,
   onOpenProfile,
+  onTogglePin,
+  onToggleArchive,
+  onMute,
+  onMarkUnread,
+  onMarkRead,
+  onDeleteChat,
   className,
 }: SidebarProps) {
   const [search, setSearch] = useState('');
+  const [showArchive, setShowArchive] = useState(false);
   const phone = me?.phone ?? fallbackPhone;
   const selfLabel = me?.display_name?.trim() || phone;
+  const query = search.trim().toLowerCase();
 
-  const filteredChats = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) {
-      return chats;
-    }
-    return chats.filter((chat) => {
-      const titleMatch = chat.title.toLowerCase().includes(query);
-      const messageMatch = (chat.last_message ?? '').toLowerCase().includes(query);
-      return titleMatch || messageMatch;
+  const matches = (chat: ChatItem) =>
+    !query ||
+    chat.title.toLowerCase().includes(query) ||
+    (chat.last_message ?? '').toLowerCase().includes(query);
+
+  // Закреплённые всегда сверху — внутри активных и внутри архива.
+  const sortForList = (list: ChatItem[]) =>
+    [...list].sort((left, right) => {
+      if (left.pinned !== right.pinned) {
+        return left.pinned ? -1 : 1;
+      }
+      return (right.last_timestamp ?? 0) - (left.last_timestamp ?? 0);
     });
-  }, [chats, search]);
+
+  const activeChats = useMemo(
+    () => sortForList(chats.filter((chat) => !chat.archived && matches(chat))),
+    // matches зависит только от query и chats.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chats, query],
+  );
+  const archivedChats = useMemo(
+    () => sortForList(chats.filter((chat) => chat.archived && matches(chat))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chats, query],
+  );
+  // При поиске архивные чаты показываем сразу, без сворачивания.
+  const archiveVisible = query.length > 0 || showArchive;
+
+  const renderChat = (chat: ChatItem) => (
+    <ChatListItem
+      key={chat.id}
+      chat={chat}
+      active={chat.id === activeChatId}
+      onSelect={onSelectChat}
+      onTogglePin={onTogglePin}
+      onToggleArchive={onToggleArchive}
+      onMute={onMute}
+      onMarkUnread={onMarkUnread}
+      onMarkRead={onMarkRead}
+      onDelete={onDeleteChat}
+    />
+  );
 
   const status = WS_STATUS[wsStatus];
 
@@ -204,16 +250,25 @@ export function Sidebar({
       <div className="kosta-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {loading ? (
           <ChatListSkeleton />
-        ) : filteredChats.length > 0 ? (
+        ) : activeChats.length > 0 || archivedChats.length > 0 ? (
           <div className="space-y-0.5">
-            {filteredChats.map((chat) => (
-              <ChatListItem
-                key={chat.id}
-                chat={chat}
-                active={chat.id === activeChatId}
-                onSelect={onSelectChat}
-              />
-            ))}
+            {activeChats.map(renderChat)}
+
+            {archivedChats.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowArchive((open) => !open)}
+                aria-expanded={showArchive}
+                className="mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-muted transition-colors hover:bg-panel-soft hover:text-ink"
+              >
+                <Archive className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="flex-1 text-left">Архив</span>
+                <span className="tabular-nums">{archivedChats.length}</span>
+              </button>
+            )}
+            {archivedChats.length > 0 && archiveVisible && (
+              <div className="space-y-0.5">{archivedChats.map(renderChat)}</div>
+            )}
           </div>
         ) : (
           <div className="flex h-full flex-col items-center justify-center px-6 text-center">

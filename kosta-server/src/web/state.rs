@@ -182,6 +182,17 @@ impl WebState {
         }
     }
 
+    /// Отправляет событие всем соединениям одного пользователя (все вкладки и
+    /// устройства). Нужно для изменений, которые видны только ему самому:
+    /// закрепление, мьют, архив и удаление чата из списка.
+    pub fn broadcast_to_user(&self, user_id: i64, message: &str) {
+        let map = self.users.lock().unwrap();
+        let msg = SendMessage(message.to_string());
+        for addr in map.registry.get(user_id) {
+            addr.do_send(msg.clone());
+        }
+    }
+
     // Addr — идентификатор канала с Mutex внутри, но его хеш не меняется;
     // mutable_key_type здесь ложное срабатывание.
     #[allow(clippy::mutable_key_type)]

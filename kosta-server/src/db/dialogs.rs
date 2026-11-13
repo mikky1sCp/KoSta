@@ -4,11 +4,13 @@
 use anyhow::{anyhow, Result};
 use rusqlite::OptionalExtension;
 
-use super::{ChatRow, Database, DialogMeta, ParticipantRow};
+use super::{now_secs, ChatRow, Database, DialogMeta, ParticipantRow};
 
 /// Общий SELECT списка чатов. Плейсхолдер `?1` — зритель: все агрегаты
 /// (заголовок, последнее сообщение, непрочитанные, статус) считаются одним
 /// запросом, чтобы список не уходил в N+1 по истории каждого диалога.
+/// Персональное состояние чата (закрепление, мьют, архив) берётся из строки
+/// участия самого зрителя; удалённые из списка (`deleted = 1`) не попадают.
 const CHAT_ROWS_SQL: &str = "
     SELECT d.id, d.type, d.title,
            (SELECT COALESCE(NULLIF(TRIM(u.display_name), ''), u.phone)
@@ -32,10 +34,11 @@ const CHAT_ROWS_SQL: &str = "
                      WHERE us.user_id = (SELECT dp2.user_id FROM dialog_participants dp2
                                          WHERE dp2.dialog_id = d.id AND dp2.user_id != ?1
                                          ORDER BY dp2.user_id LIMIT 1)
-                       AND us.status = 0), 0) AS other_online
+                       AND us.status = 0), 0) AS other_online,
+           dp.pinned_at, dp.muted_until, dp.archived, dp.marked_unread
     FROM dialogs d
     JOIN dialog_participants dp ON dp.dialog_id = d.id
-    WHERE dp.user_id = ?1";
+    WHERE dp.user_id = ?1 AND dp.deleted = 0";
 
 impl Database {
     // ===== ДИАЛОГИ =====
@@ -140,7 +143,7 @@ impl Database {
     pub fn get_user_chats(&self, user_id: i64) -> Result<Vec<ChatRow>> {
         let conn = self.get_conn()?;
         let sql = format!(
-            "{} ORDER BY COALESCE(last_ts, d.created_at) DESC",
+            "{} ORDER BY (dp.pinned_at IS NOT NULL) DESC, COALESCE(last_ts, d.created_at) DESC",
             CHAT_ROWS_SQL
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -420,6 +423,90 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // ===== ЛИЧНОЕ СОСТОЯНИЕ ЧАТА =====
+    //
+    // Всё ниже хранится в строке участия самого пользователя, поэтому
+    // закрепление/мьют/архив одного участника не видны другому.
+
+    /// Закрепляет (`true`) или открепляет (`false`) чат у пользователя.
+    pub fn set_chat_pinned(&self, user_id: i64, dialog_id: i64, pinned: bool) -> Result<()> {
+        let conn = self.get_conn()?;
+        let pinned_at = if pinned { Some(now_secs()) } else { None };
+        conn.execute(
+            "UPDATE dialog_participants SET pinned_at = ?1
+             WHERE dialog_id = ?2 AND user_id = ?3",
+            rusqlite::params![pinned_at, dialog_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Убирает чат в архив (`true`) или возвращает из архива (`false`).
+    pub fn set_chat_archived(&self, user_id: i64, dialog_id: i64, archived: bool) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE dialog_participants SET archived = ?1
+             WHERE dialog_id = ?2 AND user_id = ?3",
+            rusqlite::params![i64::from(archived), dialog_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Включает мьют до `muted_until` (unix seconds, `0` — навсегда) или
+    /// снимает его (`None`).
+    pub fn set_chat_muted(
+        &self,
+        user_id: i64,
+        dialog_id: i64,
+        muted_until: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE dialog_participants SET muted_until = ?1
+             WHERE dialog_id = ?2 AND user_id = ?3",
+            rusqlite::params![muted_until, dialog_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Ручная пометка «непрочитано» у пользователя.
+    pub fn set_chat_marked_unread(&self, user_id: i64, dialog_id: i64, marked: bool) -> Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE dialog_participants SET marked_unread = ?1
+             WHERE dialog_id = ?2 AND user_id = ?3",
+            rusqlite::params![i64::from(marked), dialog_id, user_id],
+        )?;
+        Ok(())
+    }
+
+    /// Удаляет чат из списка пользователя.
+    ///
+    /// Личный диалог мягко скрывается (`deleted = 1`): собеседник не теряет
+    /// историю, а при новом сообщении диалог снова появляется в списке
+    /// (это делает точка сохранения сообщения в `db::messages`).
+    /// Группу пользователь покидает; пустая группа удаляется целиком.
+    /// Возвращает `true`, если диалог удалён из БД.
+    pub fn delete_chat(&self, user_id: i64, dialog_id: i64) -> Result<bool> {
+        match self.get_dialog_type(dialog_id)? {
+            Some(0) => {
+                let conn = self.get_conn()?;
+                conn.execute(
+                    "UPDATE dialog_participants
+                     SET deleted = 1, pinned_at = NULL, archived = 0, marked_unread = 0
+                     WHERE dialog_id = ?1 AND user_id = ?2",
+                    rusqlite::params![dialog_id, user_id],
+                )?;
+                Ok(false)
+            }
+            Some(1) => {
+                self.remove_participant(dialog_id, user_id)?;
+                self.ensure_group_has_admin(dialog_id)?;
+                self.delete_empty_dialog(dialog_id)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 
 /// Человекочитаемый заголовок диалога.
@@ -460,12 +547,23 @@ fn chat_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
     let last_timestamp: Option<i64> = row.get(6)?;
     let unread_count: i64 = row.get(7)?;
     let other_online: i64 = row.get(8)?;
+    let pinned_at: Option<i64> = row.get(9)?;
+    let muted_until: Option<i64> = row.get(10)?;
+    let archived: i64 = row.get(11)?;
+    let marked_unread: i64 = row.get(12)?;
 
     let is_group = typ == 1;
     let (other_user_id, is_online) = if is_group {
         (None, false)
     } else {
         (other_user_id, other_online != 0)
+    };
+    // `0` — «навсегда», положительное значение — до момента. Истёкший мьют
+    // считается снятым, чтобы клиенту не пришлось самому проверять время.
+    let muted = match muted_until {
+        None => false,
+        Some(0) => true,
+        Some(until) => until > super::now_secs(),
     };
 
     Ok(ChatRow {
@@ -477,5 +575,10 @@ fn chat_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
         unread_count,
         other_user_id,
         is_online,
+        pinned: pinned_at.is_some(),
+        muted,
+        muted_until,
+        archived: archived != 0,
+        marked_unread: marked_unread != 0,
     })
 }

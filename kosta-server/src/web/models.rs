@@ -40,6 +40,32 @@ pub struct ChatItem {
     pub other_user_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_online: Option<bool>,
+    /// Чат закреплён у текущего пользователя (всегда наверху списка).
+    pub pinned: bool,
+    /// Уведомления отключены прямо сейчас (учитывается срок мьюта).
+    pub muted: bool,
+    /// До какого момента действует мьют (unix seconds; `0` — навсегда).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub muted_until: Option<i64>,
+    /// Чат убран в архив у текущего пользователя.
+    pub archived: bool,
+    /// Текущий пользователь вручную пометил чат непрочитанным.
+    pub marked_unread: bool,
+}
+
+/// Тело `PATCH /api/chats/{id}/state`.
+///
+/// Все поля необязательны: меняются только переданные. `muted: true` включает
+/// мьют на срок из `mute_duration` (по умолчанию — навсегда); `muted: false`
+/// снимает его. `marked_unread` — ручная пометка «непрочитано».
+#[derive(Debug, Default, Deserialize)]
+pub struct ChatStateRequest {
+    pub pinned: Option<bool>,
+    pub archived: Option<bool>,
+    pub muted: Option<bool>,
+    /// `"1h"`, `"8h"` или `"forever"`; имеет смысл только при `muted: true`.
+    pub mute_duration: Option<String>,
+    pub marked_unread: Option<bool>,
 }
 
 /// Участник диалога в ответе `GET /api/chats/{id}`.
@@ -247,6 +273,11 @@ mod tests {
             unread_count: 2,
             other_user_id,
             is_online,
+            pinned: false,
+            muted: false,
+            muted_until: None,
+            archived: false,
+            marked_unread: false,
         }
     }
 
