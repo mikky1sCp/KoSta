@@ -49,9 +49,8 @@ impl SecretsBox {
         } else {
             let mut key = [0u8; KEY_LEN];
             OsRng.fill_bytes(&mut key);
-            std::fs::write(path, key).with_context(|| {
-                format!("не удалось записать мастер-ключ {}", path.display())
-            })?;
+            std::fs::write(path, key)
+                .with_context(|| format!("не удалось записать мастер-ключ {}", path.display()))?;
             restrict_permissions(path)?;
             Ok(Self { key })
         }
@@ -86,20 +85,23 @@ impl SecretsBox {
             let nonce: [u8; NONCE_LEN] = blob[1..1 + NONCE_LEN]
                 .try_into()
                 .map_err(|_| anyhow!("битый nonce"))?;
-            kosta_crypto::gcm::decrypt_gcm(&self.key, &nonce, &blob[1 + NONCE_LEN..])
-                .map_err(|e| anyhow!("не удалось расшифровать секрет (другой мастер-ключ?): {}", e))?
+            kosta_crypto::gcm::decrypt_gcm(&self.key, &nonce, &blob[1 + NONCE_LEN..]).map_err(
+                |e| {
+                    anyhow!(
+                        "не удалось расшифровать секрет (другой мастер-ключ?): {}",
+                        e
+                    )
+                },
+            )?
         } else {
             // Легаси: до шифрования секрет лежал открытым текстом.
             blob.to_vec()
         };
 
-        plain.as_slice().try_into().map_err(|_| {
-            anyhow!(
-                "секрет должен быть {} байт, получено {}",
-                N,
-                plain.len()
-            )
-        })
+        plain
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("секрет должен быть {} байт, получено {}", N, plain.len()))
     }
 }
 

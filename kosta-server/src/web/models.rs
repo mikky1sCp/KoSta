@@ -189,7 +189,10 @@ mod tests {
     fn login_request_register_defaults_to_false() {
         let req: LoginRequest =
             serde_json::from_str(r#"{"phone":"+79990000000","password":"testpass123"}"#).unwrap();
-        assert!(!req.register, "без явного register аккаунт создаваться не должен");
+        assert!(
+            !req.register,
+            "без явного register аккаунт создаваться не должен"
+        );
     }
 
     #[test]
@@ -241,8 +244,14 @@ mod tests {
     fn chat_item_omits_private_fields_for_group() {
         let value = serde_json::to_value(chat_item(true, None, None)).unwrap();
         let object = value.as_object().unwrap();
-        assert!(!object.contains_key("other_user_id"), "у группы нет собеседника");
-        assert!(!object.contains_key("is_online"), "у группы нет статуса собеседника");
+        assert!(
+            !object.contains_key("other_user_id"),
+            "у группы нет собеседника"
+        );
+        assert!(
+            !object.contains_key("is_online"),
+            "у группы нет статуса собеседника"
+        );
         assert_eq!(value["unread_count"], 2);
     }
 
@@ -278,8 +287,7 @@ mod tests {
 
     #[test]
     fn group_request_defaults_are_empty() {
-        let req: CreateGroupChatRequest =
-            serde_json::from_str(r#"{"title":"Друзья"}"#).unwrap();
+        let req: CreateGroupChatRequest = serde_json::from_str(r#"{"title":"Друзья"}"#).unwrap();
         assert_eq!(req.title, "Друзья");
         assert!(req.phones.is_empty(), "группа без приглашённых валидна");
     }
@@ -287,7 +295,10 @@ mod tests {
     #[test]
     fn missing_title_is_empty_string_not_extractor_error() {
         let req: RenameChatRequest = serde_json::from_str("{}").unwrap();
-        assert!(req.title.is_empty(), "пустое название отсеет валидация хендлера");
+        assert!(
+            req.title.is_empty(),
+            "пустое название отсеет валидация хендлера"
+        );
     }
 
     #[test]

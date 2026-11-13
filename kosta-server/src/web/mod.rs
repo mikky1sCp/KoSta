@@ -1,22 +1,30 @@
 // kosta-server/src/web/mod.rs
 pub mod auth;
+pub mod client_addr;
 pub mod handlers;
-pub mod ws;
 pub mod models;
 pub mod state;
+pub mod ws;
 
+use crate::db::Database;
+use crate::media;
+use crate::metrics;
+use crate::web::state::WebState;
+use actix_files::Files;
 use actix_web::{
     middleware::{DefaultHeaders, Logger},
     web, App, HttpResponse, HttpServer,
 };
-use actix_files::Files;
 use std::sync::Arc;
-use crate::db::Database;
-use crate::media;
-use crate::web::state::WebState;
-use crate::metrics; // <-- импорт метрик
 
-pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Result<()> {
+pub fn run_web_server(
+    db: Arc<Database>,
+    host: &str,
+    port: u16,
+    trust_proxy: bool,
+) -> std::io::Result<()> {
+    // Один раз на процесс: от этого флага зависит, верить ли Forwarded.
+    client_addr::set_trust_proxy(trust_proxy);
     let state = web::Data::new(WebState::new(db.clone()));
     let db = web::Data::new(db);
     let host = host.to_string();
@@ -114,21 +122,32 @@ pub fn run_web_server(db: Arc<Database>, host: &str, port: u16) -> std::io::Resu
                                 .route(web::post().to(handlers::toggle_reaction)),
                         )
                         // Скачивание по id сообщения: путь хранения наружу не отдаётся.
-                        .route("/media/{message_id}", web::get().to(handlers::download_media))
-                        .route("/users/lookup", web::get().to(handlers::lookup_user))
+                        .route(
+                            "/media/{message_id}",
+                            web::get().to(handlers::download_media),
+                        )
+                        .route("/users/lookup", web::get().to(handlers::lookup_user)),
                 )
                 // --- Health & Metrics ---
-                .route("/health", web::get().to(|| async {
-                    HttpResponse::Ok().json(serde_json::json!({"status":"ok"}))
-                }))
-                .route("/metrics", web::get().to(|| async {
-                    match metrics::render_metrics() {
-                        Ok(body) => HttpResponse::Ok()
-                            .content_type("text/plain; version=0.0.4")
-                            .body(body),
-                        Err(e) => HttpResponse::InternalServerError().body(format!("Error: {}", e)),
-                    }
-                }))
+                .route(
+                    "/health",
+                    web::get().to(|| async {
+                        HttpResponse::Ok().json(serde_json::json!({"status":"ok"}))
+                    }),
+                )
+                .route(
+                    "/metrics",
+                    web::get().to(|| async {
+                        match metrics::render_metrics() {
+                            Ok(body) => HttpResponse::Ok()
+                                .content_type("text/plain; version=0.0.4")
+                                .body(body),
+                            Err(e) => {
+                                HttpResponse::InternalServerError().body(format!("Error: {}", e))
+                            }
+                        }
+                    }),
+                )
                 .service(web::resource("/ws").to(ws::websocket_handler))
                 .service(Files::new("/", ui_dir.as_str()).index_file("index.html"))
         })

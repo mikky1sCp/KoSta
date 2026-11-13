@@ -23,6 +23,7 @@ client.
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
 
 ## Run
@@ -162,6 +163,7 @@ Configured in `config.toml`:
 | `max_connections` | 256 | excess connections are dropped immediately |
 | `web.host` / `web.port` | 127.0.0.1 / 8081 | web API, WebSocket and static UI |
 | `web.ui_dir` | `web-ui/dist` | built UI directory with `index.html` (`KOSTA_WEB_UI_DIR` overrides) |
+| `web.trust_proxy` | false | read the client IP from `Forwarded`/`X-Forwarded-For` (only behind a trusted reverse proxy) |
 | `media.dir` | `media` | directory for uploaded files (`KOSTA_MEDIA_DIR` overrides) |
 | `media.max_upload_mb` | 25 | maximum size of a single upload, MiB |
 
@@ -219,6 +221,9 @@ max_connections = 256
 host = "127.0.0.1"
 port = 8081
 ui_dir = "web-ui/dist"
+# Only behind a trusted reverse proxy: per-IP limits then use
+# Forwarded / X-Forwarded-For instead of the proxy's address.
+trust_proxy = false
 
 [media]
 # Directory for uploaded files (KOSTA_MEDIA_DIR overrides)

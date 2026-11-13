@@ -1,6 +1,6 @@
 use anyhow::Result;
-use std::sync::Arc;
 use config::Config;
+use std::sync::Arc;
 use tokio::signal;
 
 mod db;
@@ -28,10 +28,7 @@ async fn main() -> Result<()> {
         .ok()
         .or_else(|| config.get_string("media.dir").ok())
         .unwrap_or_else(|| "media".to_string());
-    let max_upload_mb = config
-        .get_int("media.max_upload_mb")
-        .unwrap_or(25)
-        .max(1) as u64;
+    let max_upload_mb = config.get_int("media.max_upload_mb").unwrap_or(25).max(1) as u64;
     media::init(&media_dir, max_upload_mb)?;
 
     // Бинарный протокол после cutover (этап 6) — только MTProto 2.0,
@@ -56,16 +53,15 @@ async fn main() -> Result<()> {
 
     // Мастер-ключ для шифрования секретов сессий в БД. Хранится отдельно
     // от базы, чтобы утечка файла БД не давала готовых сессий.
-    let master_key_path = std::env::var("KOSTA_MASTER_KEY_PATH")
-        .unwrap_or_else(|_| "session_master.key".to_string());
+    let master_key_path =
+        std::env::var("KOSTA_MASTER_KEY_PATH").unwrap_or_else(|_| "session_master.key".to_string());
     let secrets = Arc::new(secrets::SecretsBox::load_or_create(std::path::Path::new(
         &master_key_path,
     ))?);
 
     // KOSTA_DB_PATH переопределяет файл БД (нужно нагрузочным тестам, чтобы
     // не засорять рабочую базу).
-    let db_path = std::env::var("KOSTA_DB_PATH")
-        .unwrap_or(config.get_string("server.db_path")?);
+    let db_path = std::env::var("KOSTA_DB_PATH").unwrap_or(config.get_string("server.db_path")?);
     let db = Arc::new(db::Database::new(&db_path, secrets)?);
 
     // Веб-сервер слушает свой хост/порт из конфига.
@@ -76,6 +72,10 @@ async fn main() -> Result<()> {
         .get_int("web.port")
         .map(|value| value as u16)
         .unwrap_or(8081);
+    // Верить ли Forwarded / X-Forwarded-For. Включать только когда сервер
+    // действительно стоит за доверенным reverse-proxy: иначе заголовок
+    // подделывается и per-IP лимиты обходятся.
+    let web_trust_proxy = config.get_bool("web.trust_proxy").unwrap_or(false);
     // Путь к статике читается web-слоем из env (см. web/mod.rs).
     if let Ok(ui_dir) = config.get_string("web.ui_dir") {
         std::env::set_var("KOSTA_WEB_UI_DIR", ui_dir);
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
 
     let web_db = db.clone();
     std::thread::spawn(move || {
-        if let Err(error) = web::run_web_server(web_db, &web_host, web_port) {
+        if let Err(error) = web::run_web_server(web_db, &web_host, web_port, web_trust_proxy) {
             eprintln!("Web server error: {}", error);
         }
     });
@@ -92,11 +92,8 @@ async fn main() -> Result<()> {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let shutdown_rx = shutdown_tx.subscribe();
-    let mut server_handle = tokio::spawn(mtproto::run_mtproto_server(
-        mtproto_config,
-        db,
-        shutdown_rx,
-    ));
+    let mut server_handle =
+        tokio::spawn(mtproto::run_mtproto_server(mtproto_config, db, shutdown_rx));
 
     tokio::select! {
         joined = &mut server_handle => {

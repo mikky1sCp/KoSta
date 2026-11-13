@@ -1,8 +1,7 @@
 // kosta-server/src/rate_limiter.rs
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use lazy_static::lazy_static;
 
 /// При превышении числа ключей словарь чистится от просроченных записей,
 /// иначе он растёт бесконечно (например, ключ — IP клиента).
@@ -25,7 +24,13 @@ impl<K: Eq + std::hash::Hash + Clone> RateLimiter<K> {
 
     pub fn check(&self, key: K) -> Result<(), &'static str> {
         let now = Instant::now();
-        let mut storage = self.storage.lock().unwrap();
+        // Отравленный mutex (паника в соседнем потоке, пока лок был взят) не
+        // должен ронять лимитер: данные — просто список отметок времени,
+        // поэтому продолжаем работу с внутренним состоянием.
+        let mut storage = self
+            .storage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if storage.len() > MAX_TRACKED_KEYS {
             storage.retain(|_, timestamps| {
@@ -46,39 +51,38 @@ impl<K: Eq + std::hash::Hash + Clone> RateLimiter<K> {
     }
 }
 
-// Глобальные ограничители
-lazy_static! {
-    pub static ref WS_MESSAGE_LIMITER: RateLimiter<i64> =
-        RateLimiter::new(Duration::from_secs(1), 10);   // 10 сообщений в секунду на пользователя
-    /// Индикатор набора: клиент шлёт его не чаще ~2 с, но сервер ограничивает
-    /// поток отдельно, иначе «печатает…» стал бы каналом спама для подписчиков.
-    pub static ref WS_TYPING_LIMITER: RateLimiter<i64> =
-        RateLimiter::new(Duration::from_secs(1), 10);   // 10 typing-событий в секунду на пользователя
-    /// Попытки авторизации в WebSocket (токен может быть перебираемым/устаревшим).
-    pub static ref WS_AUTH_LIMITER: RateLimiter<String> =
-        RateLimiter::new(Duration::from_secs(60), 10);  // 10 попыток auth в минуту с IP
-    /// Общий лимит кадров WebSocket с одного IP: до auth соединение анонимно,
-    /// поэтому даже мусорный JSON не должен бесконечно писать в лог.
-    pub static ref WS_FRAME_LIMITER: RateLimiter<String> =
-        RateLimiter::new(Duration::from_secs(1), 60);   // 60 кадров в секунду с IP
-    pub static ref HTTP_LIMITER: RateLimiter<String> =
-        RateLimiter::new(Duration::from_secs(60), 100); // 100 запросов в минуту с IP
-    /// Логин/регистрация: bcrypt на каждый запрос, поэтому лимит отдельный и жёсткий.
-    pub static ref LOGIN_LIMITER: RateLimiter<String> =
-        RateLimiter::new(Duration::from_secs(60), 10);  // 10 попыток входа в минуту с IP
-    /// Загрузка медиа: запись на диск и сообщение в историю. Считаем по
-    /// пользователю (а не по IP), чтобы общий HTTP-лимит не был единственной
-    /// защитой от заваливания диска файлами.
-    pub static ref MEDIA_LIMITER: RateLimiter<i64> =
-        RateLimiter::new(Duration::from_secs(60), 30);  // 30 загрузок в минуту на пользователя
-    /// Регистрация по бинарному протоколу (SignUp): дороже, чем кажется (bcrypt).
-    pub static ref SIGNUP_LIMITER: RateLimiter<String> =
-        RateLimiter::new(Duration::from_secs(3600), 5); // 5 регистраций в час с IP
-    /// Рукопожатие на TCP-протоколе: до авторизации соединение анонимно,
-    /// а ReqDHParams стоит серверу 2048-битного modpow.
-    pub static ref TCP_HANDSHAKE_LIMITER: RateLimiter<String> =
-        RateLimiter::new(Duration::from_secs(60), 30);  // 30 рукопожатий в минуту с IP
-}
+// Глобальные ограничители. `LazyLock` из std — тот же ленивый одноразовый
+// init, что давал lazy_static, но без внешней зависимости.
+pub static WS_MESSAGE_LIMITER: LazyLock<RateLimiter<i64>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(1), 10)); // 10 сообщений в секунду на пользователя
+/// Индикатор набора: клиент шлёт его не чаще ~2 с, но сервер ограничивает
+/// поток отдельно, иначе «печатает…» стал бы каналом спама для подписчиков.
+pub static WS_TYPING_LIMITER: LazyLock<RateLimiter<i64>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(1), 10)); // 10 typing-событий в секунду на пользователя
+/// Попытки авторизации в WebSocket (токен может быть перебираемым/устаревшим).
+pub static WS_AUTH_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(60), 10)); // 10 попыток auth в минуту с IP
+/// Общий лимит кадров WebSocket с одного IP: до auth соединение анонимно,
+/// поэтому даже мусорный JSON не должен бесконечно писать в лог.
+pub static WS_FRAME_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(1), 60)); // 60 кадров в секунду с IP
+pub static HTTP_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(60), 100)); // 100 запросов в минуту с IP
+/// Логин/регистрация: bcrypt на каждый запрос, поэтому лимит отдельный и жёсткий.
+pub static LOGIN_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(60), 10)); // 10 попыток входа в минуту с IP
+/// Загрузка медиа: запись на диск и сообщение в историю. Считаем по
+/// пользователю (а не по IP), чтобы общий HTTP-лимит не был единственной
+/// защитой от заваливания диска файлами.
+pub static MEDIA_LIMITER: LazyLock<RateLimiter<i64>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(60), 30)); // 30 загрузок в минуту на пользователя
+/// Регистрация по бинарному протоколу (SignUp): дороже, чем кажется (bcrypt).
+pub static SIGNUP_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(3600), 5)); // 5 регистраций в час с IP
+/// Рукопожатие на TCP-протоколе: до авторизации соединение анонимно,
+/// а ReqDHParams стоит серверу 2048-битного modpow.
+pub static TCP_HANDSHAKE_LIMITER: LazyLock<RateLimiter<String>> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(60), 30)); // 30 рукопожатий в минуту с IP
 
 /// Проверка лимита. Возвращает `Ok(())` если разрешено, иначе `Err` с сообщением.
 ///
@@ -100,11 +104,11 @@ pub fn limits_disabled() -> bool {
     *LIMITS_DISABLED
 }
 
-lazy_static! {
-    static ref LIMITS_DISABLED: bool = std::env::var("KOSTA_RATE_LIMIT_DISABLED")
+static LIMITS_DISABLED: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("KOSTA_RATE_LIMIT_DISABLED")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-}
+        .unwrap_or(false)
+});
 
 #[cfg(test)]
 mod tests {
@@ -178,5 +182,24 @@ mod tests {
             2,
             "ограничитель должен быть корректным при конкурентном доступе"
         );
+    }
+
+    #[test]
+    fn limiter_survives_poisoned_mutex() {
+        // Паника в потоке, держащем лок, отравляет mutex. Лимитер хранит лишь
+        // отметки времени, так что после такой паники он должен продолжать
+        // работать, а не паниковать на каждом вызове.
+        let limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 2));
+        let poisoned = Arc::clone(&limiter);
+        let join_result = std::thread::spawn(move || {
+            let _guard = poisoned.storage.lock().unwrap();
+            panic!("poison the mutex");
+        })
+        .join();
+        assert!(join_result.is_err(), "поток должен был упасть");
+
+        assert!(limiter.check("ip".to_string()).is_ok());
+        assert!(limiter.check("ip".to_string()).is_ok());
+        assert!(limiter.check("ip".to_string()).is_err());
     }
 }

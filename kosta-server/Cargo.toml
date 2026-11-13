@@ -20,13 +20,14 @@ num-traits = "0.2"
 sha1 = "0.10"
 sha2 = "0.10"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-lazy_static = "1.4"
 
 rusqlite = { version = "0.31", features = ["bundled"] }
 bcrypt = "0.15"
 
 native-tls = "0.2"
-config = "0.13"
+# Только TOML: остальные форматы config (yaml/json/ron/ini) в проекте не нужны,
+# а их зависимости тянут необслуживаемые крейты (yaml-rust) в audit.
+config = { version = "0.13", default-features = false, features = ["toml"] }
 
 lru = "0.12"
 r2d2 = "0.8"

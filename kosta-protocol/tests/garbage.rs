@@ -84,7 +84,12 @@ fn truncated_valid_inputs_never_panic() {
     for body in all_bodies {
         for len in 0..body.len() {
             let _ = frame::parse_plain_frame(&body[..len]);
-            let _ = frame::open_frame(&auth_key, Direction::ClientToServer, auth_key_id, &body[..len]);
+            let _ = frame::open_frame(
+                &auth_key,
+                Direction::ClientToServer,
+                auth_key_id,
+                &body[..len],
+            );
             let _ = container::parse_container(&body[..len]);
             let _ = rpc::parse_rpc_result(&body[..len]);
             let _ = salt::parse_new_session_created(&body[..len]);

@@ -165,7 +165,12 @@ impl WebState {
         self.broadcast_status(user_id, 1);
     }
 
-    pub fn broadcast_to_dialog(&self, dialog_id: i64, message: &str, exclude: Option<&Addr<WsActor>>) {
+    pub fn broadcast_to_dialog(
+        &self,
+        dialog_id: i64,
+        message: &str,
+        exclude: Option<&Addr<WsActor>>,
+    ) {
         let map = self.connections.lock().unwrap();
         let msg = SendMessage(message.to_string());
         for addr in map.get(dialog_id) {
@@ -212,22 +217,37 @@ mod tests {
     fn subscription_is_deduplicated_and_removed() {
         let mut registry: AddressRegistry<u64> = AddressRegistry::new();
         assert!(registry.add(1, 10));
-        assert!(!registry.add(1, 10), "повторная подписка не должна дублироваться");
+        assert!(
+            !registry.add(1, 10),
+            "повторная подписка не должна дублироваться"
+        );
         assert!(registry.add(1, 11));
         assert_eq!(registry.get(1).to_vec(), vec![10, 11]);
 
         assert!(!registry.remove(1, &10), "ключ ещё не опустел");
         assert!(registry.remove(1, &11), "последняя подписка очищает ключ");
         assert!(registry.get(1).is_empty());
-        assert!(!registry.remove(1, &11), "повторное снятие ничего не ломает");
+        assert!(
+            !registry.remove(1, &11),
+            "повторное снятие ничего не ломает"
+        );
     }
 
     #[test]
     fn unregister_reports_last_user_connection() {
         let mut users: UserConnections<u64> = UserConnections::new();
-        assert!(users.register(7, 100), "первое соединение — повод для online");
-        assert!(!users.register(7, 100), "повторная auth не добавляет соединение");
-        assert!(!users.register(7, 101), "второе соединение не считается первым");
+        assert!(
+            users.register(7, 100),
+            "первое соединение — повод для online"
+        );
+        assert!(
+            !users.register(7, 100),
+            "повторная auth не добавляет соединение"
+        );
+        assert!(
+            !users.register(7, 101),
+            "второе соединение не считается первым"
+        );
 
         assert!(!users.unregister(7, &100), "есть ещё одно соединение");
         assert!(users.unregister(7, &101), "offline только после последнего");

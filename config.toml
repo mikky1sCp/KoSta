@@ -15,6 +15,9 @@ max_connections = 256
 host = "127.0.0.1"
 port = 8081
 ui_dir = "web-ui/dist"
+# Включайте только за доверенным reverse-proxy: IP клиента тогда берётся
+# из Forwarded / X-Forwarded-For (иначе per-IP лимиты обходятся подделкой).
+trust_proxy = false
 
 [media]
 # Каталог для загруженных файлов (KOSTA_MEDIA_DIR переопределяет)

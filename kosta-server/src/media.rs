@@ -108,9 +108,8 @@ impl MediaStorage {
     /// загрузку невозможной и, скорее всего, означает ошибку конфигурации.
     pub(crate) fn new(dir: impl Into<PathBuf>, max_upload_mb: u64) -> Result<Self> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir).with_context(|| {
-            format!("failed to create media directory {}", dir.display())
-        })?;
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create media directory {}", dir.display()))?;
         Ok(Self {
             dir,
             max_bytes: max_upload_mb.max(1).saturating_mul(1024 * 1024),
@@ -142,8 +141,8 @@ impl MediaStorage {
         if dialog_id <= 0 {
             return Err(anyhow!("invalid dialog id"));
         }
-        let extension = extension_for_mime(mime)
-            .ok_or_else(|| anyhow!("unsupported media type: {}", mime))?;
+        let extension =
+            extension_for_mime(mime).ok_or_else(|| anyhow!("unsupported media type: {}", mime))?;
         let name = sanitize_filename(original_name)?;
 
         if bytes.is_empty() {
@@ -186,8 +185,9 @@ impl MediaStorage {
     /// `digits/32-hex.ext`, без `..`, абсолютных путей и обратных слэшей.
     pub(crate) fn read(&self, key: &str) -> Result<Vec<u8>> {
         let path = self.storage_path(key)?;
-        std::fs::read(&path)
-            .map_err(|e| anyhow::Error::new(e).context(format!("failed to read media file {}", path.display())))
+        std::fs::read(&path).map_err(|e| {
+            anyhow::Error::new(e).context(format!("failed to read media file {}", path.display()))
+        })
     }
 
     /// Удаляет один файл по ключу (компенсация при ошибке записи в БД).
@@ -215,9 +215,7 @@ impl MediaStorage {
                     Err(e)
                 }
             })
-            .with_context(|| {
-                format!("failed to delete media directory {}", dialog_dir.display())
-            })
+            .with_context(|| format!("failed to delete media directory {}", dialog_dir.display()))
     }
 
     /// Сохраняет аватар пользователя и возвращает ключ хранения.
@@ -247,10 +245,7 @@ impl MediaStorage {
 
         let avatar_dir = self.dir.join(AVATAR_DIR);
         std::fs::create_dir_all(&avatar_dir).with_context(|| {
-            format!(
-                "failed to create avatar directory {}",
-                avatar_dir.display()
-            )
+            format!("failed to create avatar directory {}", avatar_dir.display())
         })?;
 
         let file_name = format!("{}-{}.{}", user_id, random_hex(), extension);
@@ -351,8 +346,19 @@ impl MediaStorage {
         }
         if !matches!(
             extension,
-            "png" | "jpg" | "webp" | "gif" | "pdf" | "txt" | "zip" | "mp4" | "webm" | "ogg"
-                | "mp3" | "m4a" | "wav"
+            "png"
+                | "jpg"
+                | "webp"
+                | "gif"
+                | "pdf"
+                | "txt"
+                | "zip"
+                | "mp4"
+                | "webm"
+                | "ogg"
+                | "mp3"
+                | "m4a"
+                | "wav"
         ) {
             return Err(anyhow!("invalid media key"));
         }
@@ -494,7 +500,11 @@ mod tests {
             "application/octet-stream",
             "",
         ] {
-            assert_eq!(extension_for_mime(mime), None, "MIME {mime} не должен приниматься");
+            assert_eq!(
+                extension_for_mime(mime),
+                None,
+                "MIME {mime} не должен приниматься"
+            );
             assert!(!is_supported_mime(mime));
         }
     }
@@ -502,8 +512,14 @@ mod tests {
     #[test]
     fn sanitize_strips_path_separators_and_control_chars() {
         assert_eq!(sanitize_filename("../../etc/passwd").unwrap(), "passwd");
-        assert_eq!(sanitize_filename(r"..\..\secret.txt").unwrap(), "secret.txt");
-        assert_eq!(sanitize_filename(r"C:\Users\me\photo.png").unwrap(), "photo.png");
+        assert_eq!(
+            sanitize_filename(r"..\..\secret.txt").unwrap(),
+            "secret.txt"
+        );
+        assert_eq!(
+            sanitize_filename(r"C:\Users\me\photo.png").unwrap(),
+            "photo.png"
+        );
         assert_eq!(sanitize_filename("  report.pdf  ").unwrap(), "report.pdf");
         assert_eq!(sanitize_filename("a\u{0}b\u{7}.txt").unwrap(), "ab.txt");
         assert_eq!(sanitize_filename("фото.png").unwrap(), "фото.png");
@@ -537,7 +553,10 @@ mod tests {
         let (stem, extension) = file_part.split_once('.').expect("ключ с расширением");
         assert_eq!(stem.len(), RANDOM_HEX_CHARS);
         assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(extension, "png", "расширение берётся из MIME, а не из имени");
+        assert_eq!(
+            extension, "png",
+            "расширение берётся из MIME, а не из имени"
+        );
         assert_eq!(saved.name, "photo.png");
         assert!(temp.storage.dir().join("42").join(file_part).is_file());
 
@@ -548,7 +567,11 @@ mod tests {
                 .unwrap()
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o600, "файл должен быть доступен только владельцу");
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "файл должен быть доступен только владельцу"
+            );
         }
 
         assert_eq!(temp.storage.read(&saved.key).unwrap(), bytes);
@@ -562,9 +585,7 @@ mod tests {
     #[test]
     fn delete_dialog_removes_directory_and_is_idempotent() {
         let temp = TempMedia::new(25);
-        temp.storage
-            .save(7, b"one", "a.txt", "text/plain")
-            .unwrap();
+        temp.storage.save(7, b"one", "a.txt", "text/plain").unwrap();
         temp.storage
             .save(7, b"two", "b.pdf", "application/pdf")
             .unwrap();
@@ -598,7 +619,9 @@ mod tests {
 
         let too_big = vec![0u8; 1024 * 1024 + 1];
         assert!(
-            temp.storage.save(1, &too_big, "big.txt", "text/plain").is_err(),
+            temp.storage
+                .save(1, &too_big, "big.txt", "text/plain")
+                .is_err(),
             "файл больше лимита не должен сохраняться"
         );
         assert_eq!(temp.storage.max_bytes(), 1024 * 1024);

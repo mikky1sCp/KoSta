@@ -17,7 +17,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy,rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -25,6 +25,9 @@ jobs:
       # native-tls на Linux собирается против OpenSSL
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Format
+        run: cargo fmt --all -- --check
 
       - name: Build
         run: cargo build --workspace --all-targets
@@ -57,6 +60,20 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+  audit:
+    name: Security advisories (cargo audit)
+    runs-on: ubuntu-latest
+    # audit-check публикует отчёт через GitHub Checks API.
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   web-ui:
     name: Web UI build
@@ -149,9 +166,31 @@ jobs:
       - name: MTProto garbage resistance
         run: node scripts/tl-garbage.mjs
 
+      # Остальные e2e идут с KOSTA_RATE_LIMIT_DISABLED=1 (много аккаунтов с
+      # одного IP), а проверке лимитов нужен сервер с включёнными
+      # ограничителями — поэтому перезапускаем его без этой переменной.
+      - name: Restart server with rate limits enabled
+        run: |
+          pkill -f 'target/debug/kosta-server' || true
+          sleep 1
+          ./target/debug/kosta-server > server-limits.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8081/health > /dev/null; then
+              echo "server with rate limits is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not restart"
+          cat server-limits.log
+          exit 1
+
       - name: MTProto server limits
         run: node scripts/limits.mjs
 
       - name: Server log
         if: always()
-        run: tail -n 80 server.log
+        run: |
+          tail -n 80 server.log
+          echo "--- limits run ---"
+          tail -n 40 server-limits.log 2>/dev/null || true

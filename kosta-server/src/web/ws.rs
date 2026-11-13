@@ -1,14 +1,14 @@
 // kosta-server/src/web/ws.rs
+use crate::db::Database;
+use crate::metrics::{AUTH_SUCCESS, MESSAGES_SENT, WS_CONNECTIONS};
+use crate::web::state::WebState;
+use actix::{Actor, ActorContext, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
-use actix::{Actor, StreamHandler, AsyncContext, Handler, Message, ActorContext};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, error, warn};
-use crate::db::Database;
-use crate::web::state::WebState;
-use crate::metrics::{WS_CONNECTIONS, MESSAGES_SENT, AUTH_SUCCESS};
+use tracing::{error, info, warn};
 // Импорт rate limiter
 use crate::rate_limiter::{
     check_limit, WS_AUTH_LIMITER, WS_FRAME_LIMITER, WS_MESSAGE_LIMITER, WS_TYPING_LIMITER,
@@ -233,7 +233,10 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                         // Сменить пользователя на живом соединении нельзя:
                         // иначе чужая подписка на диалог досталась бы другому аккаунту.
                         if self.user_id.is_some_and(|current| current != user_id) {
-                            send_auth_failed(ctx, "Соединение уже авторизовано другим пользователем");
+                            send_auth_failed(
+                                ctx,
+                                "Соединение уже авторизовано другим пользователем",
+                            );
                             error!("WebSocket auth failed: attempted user switch");
                             return;
                         }
@@ -267,7 +270,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                         let Some(user_id) = self.require_auth(ctx) else {
                             return;
                         };
-                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64) else {
+                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64)
+                        else {
                             send_error(ctx, "Missing dialog_id");
                             return;
                         };
@@ -304,7 +308,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                         let Some(user_id) = self.require_auth(ctx) else {
                             return;
                         };
-                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64) else {
+                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64)
+                        else {
                             send_error(ctx, "Missing dialog_id");
                             return;
                         };
@@ -374,7 +379,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                         }
 
                         let saved = self.db.save_message_with_reply(
-                            dialog_id, user_id, text, now, true, None, None, reply_to_id,
+                            dialog_id,
+                            user_id,
+                            text,
+                            now,
+                            true,
+                            None,
+                            None,
+                            reply_to_id,
                         );
 
                         match saved {
@@ -409,7 +421,11 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
 
                                 ctx.text(own_str);
                                 let self_addr = ctx.address();
-                                self.state.broadcast_to_dialog(dialog_id, &others_str, Some(&self_addr));
+                                self.state.broadcast_to_dialog(
+                                    dialog_id,
+                                    &others_str,
+                                    Some(&self_addr),
+                                );
 
                                 info!("Message {} broadcasted to dialog {}", msg_id, dialog_id);
                             }
@@ -425,7 +441,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsActor {
                         let Some(user_id) = self.require_auth(ctx) else {
                             return;
                         };
-                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64) else {
+                        let Some(dialog_id) = payload.get("dialog_id").and_then(Value::as_i64)
+                        else {
                             send_error(ctx, "Missing dialog_id");
                             return;
                         };
@@ -563,12 +580,9 @@ pub async fn websocket_handler(
     db: web::Data<Arc<Database>>,
     state: web::Data<WebState>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    // IP нужен для лимита auth; за прокси здесь будет адрес прокси,
-    // но WebSocket-хендшейк в этом проекте прямой.
-    let peer_ip = req
-        .peer_addr()
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    // IP нужен для лимитов auth/кадров. За доверенным прокси (web.trust_proxy)
+    // это адрес клиента из Forwarded/X-Forwarded-For, иначе — адрес пира.
+    let peer_ip = crate::web::client_addr::client_ip(&req);
     let ws = WsActor {
         db: db.get_ref().clone(),
         state: state.get_ref().clone(),

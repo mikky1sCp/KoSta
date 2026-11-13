@@ -951,8 +951,7 @@ getDialogs = ChatMessage;
         }
         /// «Опасная» строка из алфавита TL-схемы и случайного мусора.
         fn schema_buf(&mut self, len: usize) -> String {
-            const CHARS: &[u8] =
-                b"abcXYZ_:num#0123456789abcdef=; vector<>./-\\ \t\n{}~!`@$%^&*()";
+            const CHARS: &[u8] = b"abcXYZ_:num#0123456789abcdef=; vector<>./-\\ \t\n{}~!`@$%^&*()";
             (0..len)
                 .map(|_| CHARS[(self.next() as usize) % CHARS.len()] as char)
                 .collect()

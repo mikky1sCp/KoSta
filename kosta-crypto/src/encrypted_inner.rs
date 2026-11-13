@@ -2,10 +2,7 @@ use crate::error::CryptoError;
 use crate::gcm;
 
 /// Временный ключ для шифрования `PqInnerData` (шаг `req_DH_params`).
-pub fn tmp_key_from_nonce_bytes(
-    nonce: &[u8; 16],
-    server_nonce: &[u8; 16],
-) -> ([u8; 32], [u8; 12]) {
+pub fn tmp_key_from_nonce_bytes(nonce: &[u8; 16], server_nonce: &[u8; 16]) -> ([u8; 32], [u8; 12]) {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();

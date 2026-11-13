@@ -121,8 +121,12 @@ fn write_private_key(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("не удалось создать приватный ключ {}", path.display()))?;
     file.write_all(bytes)
         .with_context(|| format!("не удалось записать приватный ключ {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("не удалось синхронизировать приватный ключ {}", path.display()))?;
+    file.sync_all().with_context(|| {
+        format!(
+            "не удалось синхронизировать приватный ключ {}",
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -287,7 +291,10 @@ mod tests {
 
         let _ = ServerKeypair::load_or_generate_at(&private, &public).unwrap();
         let mode = std::fs::metadata(&private).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "приватный ключ должен быть доступен только владельцу");
+        assert_eq!(
+            mode, 0o600,
+            "приватный ключ должен быть доступен только владельцу"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -418,10 +418,14 @@ mod tests {
                 let plaintext = rng.bytes(len);
                 let sealed = seal(&auth_key, direction, &plaintext).unwrap();
                 assert!(sealed.ciphertext.len().is_multiple_of(ige::BLOCK));
-                let opened = open(&auth_key, direction, &sealed.msg_key, &sealed.ciphertext).unwrap();
+                let opened =
+                    open(&auth_key, direction, &sealed.msg_key, &sealed.ciphertext).unwrap();
                 assert_eq!(&opened[..len], &plaintext[..], "len={len}");
                 let pad = check_padding(opened.len(), len).unwrap();
-                assert!((MIN_PADDING..=MAX_PADDING).contains(&pad), "len={len} pad={pad}");
+                assert!(
+                    (MIN_PADDING..=MAX_PADDING).contains(&pad),
+                    "len={len} pad={pad}"
+                );
             }
         }
     }
@@ -437,7 +441,13 @@ mod tests {
             let mut tampered = sealed.ciphertext.clone();
             tampered[pos] ^= 0b1010_1010;
             assert!(
-                open(&auth_key, Direction::ClientToServer, &sealed.msg_key, &tampered).is_err(),
+                open(
+                    &auth_key,
+                    Direction::ClientToServer,
+                    &sealed.msg_key,
+                    &tampered
+                )
+                .is_err(),
                 "изменение байта {pos} не должно расшифровываться"
             );
         }

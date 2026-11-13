@@ -63,18 +63,26 @@ pub fn is_prime(n: &BigUint) -> bool {
     true
 }
 
-/// Проверяет, что `dh_prime` — простое число не короче 2048 бит,
-/// а `g` лежит в допустимом диапазоне `(1, p-1)`.
+/// Проверяет параметры Диффи–Хеллмана, присланные сервером.
+///
+/// Требования: `dh_prime` — простое, не короче 2048 бит и сравнимо с 7 по
+/// модулю 8 (безопасное простое, как в MTProto: у таких `(p-1)/2` нечётно,
+/// и `g=2` порождает подгруппу большого порядка), а `g` лежит в `(1, p-1)`.
 pub fn validate_dh_params(dh_prime: &BigUint, g: &BigUint) -> Result<(), &'static str> {
-    if !is_prime(dh_prime) {
-        return Err("dh_prime is not prime");
-    }
+    // Дешёвые проверки — до теста Миллера–Рабина: на заведомо плохих
+    // параметрах не тратим 20 modpow по 2048 бит.
     let bits = dh_prime.bits();
     if bits < 2048 {
         return Err("dh_prime is too small (must be at least 2048 bits)");
     }
+    if dh_prime % 8u32 != BigUint::from(7u32) {
+        return Err("dh_prime must be congruent to 7 mod 8");
+    }
     if g <= &BigUint::one() || g >= &(dh_prime - BigUint::one()) {
         return Err("g must be in range (1, p-1)");
+    }
+    if !is_prime(dh_prime) {
+        return Err("dh_prime is not prime");
     }
     Ok(())
 }
@@ -161,12 +169,34 @@ mod tests {
         }
     }
 
+    /// 2048-битное безопасное простое из RFC 3526 (group 14) — то же, что
+    /// сервер присылает в `server_DH_inner_data`.
+    fn mtproto_2048_prime() -> BigUint {
+        let prime_hex = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF";
+        BigUint::parse_bytes(prime_hex.as_bytes(), 16).expect("valid hex")
+    }
+
     #[test]
     fn test_validate_dh_params() {
-        let prime_hex = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF";
-        let p = BigUint::parse_bytes(prime_hex.as_bytes(), 16).unwrap();
-        let g = BigUint::from(2u32);
-        assert!(validate_dh_params(&p, &g).is_ok());
+        assert!(validate_dh_params(&mtproto_2048_prime(), &BigUint::from(2u32)).is_ok());
+    }
+
+    #[test]
+    fn dh_prime_must_be_congruent_to_7_mod_8() {
+        // Сдвиг на 4 меняет остаток по модулю 8, не меняя размер числа:
+        // проверка формы должна сработать раньше теста простоты.
+        let badly_shaped = mtproto_2048_prime() + 4u32;
+        let err = validate_dh_params(&badly_shaped, &BigUint::from(2u32))
+            .expect_err("p ≢ 7 (mod 8) должно отвергаться");
+        assert!(err.contains("mod 8"), "неожиданная ошибка: {err}");
+    }
+
+    #[test]
+    fn short_prime_is_rejected_before_primality_test() {
+        let small_safe_prime = BigUint::from(23u32); // 23 ≡ 7 (mod 8), но мало
+        let err = validate_dh_params(&small_safe_prime, &BigUint::from(2u32))
+            .expect_err("короткое p должно отвергаться");
+        assert!(err.contains("too small"), "неожиданная ошибка: {err}");
     }
 
     #[test]
