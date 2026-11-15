@@ -1,4 +1,6 @@
 # KoSta
+---
+![](docs/KoStaggh.png)
 
 KoSta is an experimental messenger built on its own TL-like binary protocol on
 top of MTProto 2.0 (AES-256-IGE with `msg_key`, message containers, `msg_id`/
